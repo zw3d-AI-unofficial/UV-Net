@@ -135,3 +135,5 @@ run_scripts/
 segmentation_checkpoints/
 segmentation_logs/
 segmentation_pretrained/
+data/
+wandb/

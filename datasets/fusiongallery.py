@@ -68,7 +68,7 @@ class FusionGalleryDataset(BaseDataset):
         sample = super().load_one_graph(file_path)
         # Additionally load the label and store it as node data
         label = np.loadtxt(
-            self.seg_path.joinpath(file_path.stem + ".seg"), dtype=np.int, ndmin=1
+            self.seg_path.joinpath(file_path.stem + ".seg"), dtype=np.int32, ndmin=1
         )
         if sample["graph"].number_of_nodes() != label.shape[0]:
             return None

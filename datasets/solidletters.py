@@ -8,15 +8,19 @@ from datasets.base import BaseDataset
 
 
 def _get_filenames(root_dir, filelist):
-    with open(str(root_dir / f"{filelist}"), "r") as f:
-        file_list = [x.strip() for x in f.readlines()]
+    if filelist:
+        with open(str(root_dir / f"{filelist}"), "r") as f:
+            file_list = [x.strip() for x in f.readlines()]
 
-    files = list(
-        x
-        for x in root_dir.rglob(f"*.bin")
-        if x.stem in file_list
-        #if util.valid_font(x) and x.stem in file_list
-    )
+        file_list_set = set(file_list)
+        files = list(
+            x
+            for x in root_dir.rglob(f"*.bin")
+            if x.stem in file_list_set
+            #if util.valid_font(x) and x.stem in file_list
+        )
+    else:
+        files = sorted(root_dir.rglob(f"*.bin"))
     return files
 
 

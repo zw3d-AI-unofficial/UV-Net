@@ -419,23 +419,32 @@ class UVNetContrastiveLearner(nn.Module):
     def __init__(
             self,
             latent_dim,
-            crv_in_channels=3,
             crv_emb_dim=64,
             srf_emb_dim=64,
             graph_emb_dim=128,
             dropout=0.3,
             out_dim=128,
+            channels=["points", "trimming_mask"]
     ):
         """
         UVNetContrastivelearner
         """
         super().__init__()
-        self.crv_in_channels = crv_in_channels
+        self.crv_in_channels = []
+        self.srf_in_channels = []
+        if "points" in channels:
+            self.crv_in_channels.extend([0, 1, 2])
+            self.srf_in_channels.extend([0, 1, 2])
+        if "normals" in channels:
+            self.srf_in_channels.extend([3, 4, 5])
+        if "tangents" in channels:
+            self.crv_in_channels.extend([3, 4, 5])
+        self.srf_in_channels.append(6)
         self.curv_encoder = uvnet.encoders.UVNetCurveEncoder(
-            in_channels=crv_in_channels, output_dims=crv_emb_dim
+            in_channels=len(self.crv_in_channels), output_dims=crv_emb_dim
         )
         self.surf_encoder = uvnet.encoders.UVNetSurfaceEncoder(
-            in_channels=4, output_dims=srf_emb_dim
+            in_channels=len(self.srf_in_channels), output_dims=srf_emb_dim
         )
         self.graph_encoder = uvnet.encoders.UVNetGraphEncoder(
             srf_emb_dim, crv_emb_dim, graph_emb_dim,
@@ -460,8 +469,8 @@ class UVNetContrastiveLearner(nn.Module):
     def forward(self, bg):
         # We only use point coordinates & mask in contrastive experiments
         # TODO(pradeep): expose a better way for the user to select these channels
-        nfeat = bg.ndata["x"][:, [0, 1, 2, 6], :, :]  # XYZ+mask channels
-        efeat = bg.edata["x"][:, :self.crv_in_channels, :]
+        nfeat = bg.ndata["x"][:, self.srf_in_channels, :, :]  # XYZ+mask channels
+        efeat = bg.edata["x"][:, self.crv_in_channels, :]
         crv_feat = self.curv_encoder(efeat)
         srf_feat = self.surf_encoder(nfeat)
         node_emb, graph_emb = self.graph_encoder(bg, srf_feat, crv_feat)
@@ -477,19 +486,20 @@ class Contrastive(pl.LightningModule):
     PyTorch Lightning module to train/test the contrastive learning model.
     """
 
-    def __init__(self, latent_dim=128, out_dim=128, temperature=0.1):
+    def __init__(self, latent_dim=128, out_dim=128, temperature=0.1, batch_size=256, channels="points,trimming_mask"):
         super().__init__()
         self.save_hyperparameters()
-        self.loss_fn = NTXentLoss(temperature=temperature)
-        self.model = UVNetContrastiveLearner(latent_dim=latent_dim, out_dim=out_dim)
+        self.loss_fn = NTXentLoss(temperature=temperature, batch_size=batch_size)
+        self.model = UVNetContrastiveLearner(latent_dim=latent_dim, out_dim=out_dim, channels=channels.split(','))
 
     def _permute_graph_data_channels(self, graph):
         graph.ndata["x"] = graph.ndata["x"].permute(0, 3, 1, 2)
         graph.edata["x"] = graph.edata["x"].permute(0, 2, 1)
         return graph
 
-    def step(self, batch, batch_idx):
-        graph1, graph2 = batch["graph"], batch["graph2"]
+    def step(self, batch, batch_idx): 
+        device = next(self.model.buffers()).device
+        graph1, graph2 = batch["graph"].to(device), batch["graph2"].to(device)
         graph1 = self._permute_graph_data_channels(graph1)
         graph2 = self._permute_graph_data_channels(graph2)
         proj1, _ = self.model(graph1)
@@ -497,12 +507,18 @@ class Contrastive(pl.LightningModule):
         return self.loss_fn(proj1, proj2)
 
     def training_step(self, batch, batch_idx):
+        if batch is None:
+            return None
         loss = self.step(batch, batch_idx)
         self.log("train_loss", loss, on_step=False, on_epoch=True, sync_dist=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
+        if batch is None:
+            return None
         loss = self.step(batch, batch_idx)
+        if loss > 5:
+            print("valid loss:", loss, ", file:", batch["filename"])
         self.log("val_loss", loss, on_step=False, on_epoch=True, sync_dist=True)
         return loss
 

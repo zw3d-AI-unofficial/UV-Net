@@ -89,7 +89,7 @@ class BaseDataset(Dataset):
 
 class BaseContrastiveDataset(BaseDataset):
     def __init__(self, split, prob_full_graph):
-        assert split in ("train", "val", "test")
+        assert split in ("train", "val", "test", "all")
         assert 0 <= prob_full_graph <= 1
         self.split = split
         self.prob_full_graph = prob_full_graph  # Probability of using the full graph as such as a view
@@ -121,8 +121,11 @@ class BaseContrastiveDataset(BaseDataset):
     def _collate(self, batch):
         collated = {"graph": dgl.batch([x["graph"] for x in batch]),
                     "graph2": dgl.batch([x["graph2"] for x in batch]),
-                    "label": torch.cat([x["label"] for x in batch], dim=0),
+                    # "label": torch.cat([x["label"] for x in batch], dim=0),
                     "filename": [x["filename"] for x in batch]}
+        if collated["graph"].num_nodes() + collated["graph2"].num_nodes() > 16384:
+            print("skip")
+            return None
         return collated
 
     def __getitem__(self, idx):
@@ -130,6 +133,10 @@ class BaseContrastiveDataset(BaseDataset):
         filename = graph_and_filename["filename"]
         graph = graph_and_filename["graph"]
         graph2 = self.apply_transformation(graph.clone())
+        if self.random_rotate:
+            rotation = util.get_random_rotation()
+            graph2.ndata["x"] = util.rotate_uvgrid(graph2.ndata["x"], rotation)
+            graph2.edata["x"] = util.rotate_uvgrid(graph2.edata["x"], rotation)
         if self.split == "train" and random.uniform(0, 1) > self.prob_full_graph:
             graph = self.apply_transformation(graph.clone())
         else:
@@ -140,8 +147,9 @@ class BaseContrastiveDataset(BaseDataset):
         graph2.edata.pop("_ID", None)
         graph = self.jitter_graph(graph)
         graph2 = self.jitter_graph(graph2)
-        return {"graph": graph, "graph2": graph2, "label": self.labels[idx],
-                "filename": filename}
+        # return {"graph": graph, "graph2": graph2, "label": self.labels[idx],
+        #         "filename": filename}
+        return {"graph": graph, "graph2": graph2, "filename": filename}
 
     def get_dataloader(self, batch_size=128, shuffle=True, num_workers=0, drop_last=True):
         return DataLoader(
@@ -151,6 +159,7 @@ class BaseContrastiveDataset(BaseDataset):
             collate_fn=self._collate,
             num_workers=num_workers,
             drop_last=drop_last,
+            pin_memory=True
         )
 
     def get_subgraph(self, graph, num_nodes=1, hops=2, normalize=False):
