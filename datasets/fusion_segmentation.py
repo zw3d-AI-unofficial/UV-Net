@@ -6,7 +6,7 @@ import json
 from sklearn.model_selection import train_test_split
 
 
-class FusionGalleryDataset(BaseDataset):
+class FusionSegmentationDataset(BaseDataset):
     @staticmethod
     def num_classes():
         return 8

@@ -7,7 +7,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.utilities.seed import seed_everything
 
-from datasets.fusiongallery import FusionGalleryDataset
+from datasets.fusion_segmentation import FusionSegmentationDataset
 from datasets.mfcad import MFCADDataset
 from uvnet.models import Segmentation
 
@@ -16,7 +16,7 @@ parser.add_argument(
     "traintest", choices=("train", "test"), help="Whether to train or test"
 )
 parser.add_argument(
-    "--dataset", choices=("mfcad", "fusiongallery"), help="Segmentation dataset"
+    "--dataset", choices=("mfcad", "fusionseg"), help="Segmentation dataset"
 )
 parser.add_argument("--dataset_path", type=str, help="Path to dataset")
 parser.add_argument("--batch_size", type=int, default=64, help="Batch size")
@@ -79,8 +79,8 @@ trainer = Trainer.from_argparse_args(
 
 if args.dataset == "mfcad":
     Dataset = MFCADDataset
-elif args.dataset == "fusiongallery":
-    Dataset = FusionGalleryDataset
+elif args.dataset == "fusionseg":
+    Dataset = FusionSegmentationDataset
 
 if args.traintest == "train":
     # Train/val

@@ -151,7 +151,7 @@ class BaseContrastiveDataset(BaseDataset):
         #         "filename": filename}
         return {"graph": graph, "graph2": graph2, "filename": filename}
 
-    def get_dataloader(self, batch_size=128, shuffle=True, num_workers=0, drop_last=True):
+    def get_dataloader(self, batch_size=1, shuffle=True, num_workers=0, drop_last=True):
         return DataLoader(
             self,
             batch_size=batch_size,
