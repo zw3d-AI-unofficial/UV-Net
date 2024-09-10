@@ -18,8 +18,8 @@ from sklearn.preprocessing import StandardScaler
 from torch import nn
 
 import uvnet.encoders
-import dgl
 import metrics
+from uvnet.joinable import JoinABLe
 
 
 class _NonLinearClassifier(nn.Module):
@@ -602,111 +602,68 @@ class Contrastive(pl.LightningModule):
         assert len(filenames) == data_count, f"{len(filenames)}, {data_count}"
         return {"embeddings": embeddings, "labels": labels, "outputs": outs, "filenames": filenames}
 
-class JointPredictHead(nn.Module):
-    def __init__(self, input_dim, dropout=0.0):
-        super().__init__()
-        self.projection_layer = nn.Sequential(
-            nn.Linear(input_dim, input_dim, bias=False),
-            nn.BatchNorm1d(input_dim),
-            nn.Dropout(dropout),
-            nn.ReLU(),
-            nn.Linear(input_dim, input_dim, bias=False),
-            nn.BatchNorm1d(input_dim),
-            nn.ReLU(),
-            nn.Linear(input_dim, 1, bias=False),
-        )
-
-    def forward(self, x, jg):
-        src_nodes, dst_nodes = jg.edges()
-        x = x[src_nodes, :] + x[dst_nodes, :]
-        logits = self.projection_layer(x).squeeze()
-        return logits
-        
 
 class JointPrediction(pl.LightningModule):
     def __init__(
             self, 
-            latent_dim=128,
-            node_emb_dim=64,
-            out_dim=128, 
-            lr=1e-3, 
-            channels="points,trimming_mask", 
-            pretrained_model=None
+            input_features=["entity_types","area","length","points","normals","tangents","trimming_mask"],
+            emb_dim=384,
+            n_head=8,
+            n_layer_gat=2,
+            n_layer_sat=2,
+            n_layer_cat=2,
+            bias=False,
+            dropout=0.0,
+            lr=1e-3
         ):
         super().__init__()
-        if pretrained_model is None:
-            self.pre_trained_model = Contrastive(
-                latent_dim=latent_dim, 
-                crv_emb_dim=node_emb_dim,
-                srf_emb_dim=node_emb_dim,
-                graph_emb_dim=2*node_emb_dim,
-                out_dim=out_dim, 
-                channels=channels
-            ).model
-        else:
-            self.pre_trained_model = Contrastive.load_from_checkpoint(
-                latent_dim=latent_dim, 
-                crv_emb_dim=node_emb_dim,
-                srf_emb_dim=node_emb_dim,
-                graph_emb_dim=2*node_emb_dim,
-                out_dim=out_dim, 
-                channels=channels, 
-                checkpoint_path=pretrained_model
-            ).model
-        self.joint_predict_head = JointPredictHead(input_dim=node_emb_dim)
+        # if pretrained_model is None:
+        #     self.pre_trained_model = Contrastive(
+        #         latent_dim=latent_dim, 
+        #         crv_emb_dim=node_emb_dim,
+        #         srf_emb_dim=node_emb_dim,
+        #         graph_emb_dim=2*node_emb_dim,
+        #         out_dim=out_dim, 
+        #         channels=channels
+        #     ).model
+        # else:
+        #     self.pre_trained_model = Contrastive.load_from_checkpoint(
+        #         latent_dim=latent_dim, 
+        #         crv_emb_dim=node_emb_dim,
+        #         srf_emb_dim=node_emb_dim,
+        #         graph_emb_dim=2*node_emb_dim,
+        #         out_dim=out_dim, 
+        #         channels=channels, 
+        #         checkpoint_path=pretrained_model
+        #     ).model
+        # self.projection_layer = nn.Sequential(
+        #     nn.Linear(2*node_emb_dim, latent_dim, bias=False),
+        #     nn.BatchNorm1d(latent_dim),
+        #     nn.Dropout(0.3),
+        #     nn.ReLU(),
+        #     nn.Linear(latent_dim, latent_dim, bias=False),
+        #     nn.BatchNorm1d(latent_dim),
+        #     nn.ReLU(),
+        #     nn.Linear(latent_dim, 1, bias=False),
+        #     nn.Sigmoid()
+        # )
+        self.model = JoinABLe(
+            input_features, 
+            emb_dim, 
+            n_head, 
+            n_layer_gat, 
+            n_layer_sat, 
+            n_layer_cat, 
+            bias, 
+            dropout
+        )
         self.lr = lr
         self.test_step_outputs = []
         self.test_results = None
-
-    def symmetric_loss(self, x, labels, n1, n2):
-        x_2d = x.view(n1, n2)
-        labels_2d = labels.view(n1, n2)
-        ys_2d = torch.nonzero(labels_2d).to(x.device)
-        loss1 = F.cross_entropy(x_2d[ys_2d[:, 0], :], ys_2d[:, 1], reduction="mean")
-        loss2 = F.cross_entropy(x_2d[:, ys_2d[:, 1]].transpose(0, 1), ys_2d[:, 0], reduction="mean")
-        loss = 0.5 * (loss1 + loss2)
-        return loss
-    
-    def soft_cross_entropy(self, x, labels):
-        labels = labels.to(x.device)
-        logprobs = F.log_softmax(x, dim=-1)
-        # loss = -(labels * logprobs).sum()
-        loss = -torch.dot(labels, logprobs)
-        return loss
-
-    def mle_loss(self, x, labels):
-        # Normalize the ground truth matrix into a PDF
-        labels = labels / labels.sum()
-        labels = labels.view(-1)
-        # Compare the predicted and ground truth PDFs
-        loss = self.soft_cross_entropy(x, labels)
-        return loss
-    
-    def loss_fn(self, x, joint_graph, num_nodes1, num_nodes2):
-        joint_graph_unbatched = dgl.unbatch(joint_graph)
-        batch_size = len(joint_graph_unbatched)
-        size_of_each_joint_graph = [np.prod(list(item.edata["label_matrix"].shape)) for item in joint_graph_unbatched]
-
-        # Compute loss individually with each joint in the batch
-        loss_clf = 0
-        loss_sym = 0
-        start = 0
-
-        for i in range(batch_size):
-            size_i = size_of_each_joint_graph[i]
-            end = start + size_i
-            x_i = x[start:end]
-            labels_i = joint_graph_unbatched[i].edata["label_matrix"]
-            # Classification loss
-            # loss_clf += self.mle_loss(x_i, labels_i)
-            # Symmetric loss
-            loss_sym += self.symmetric_loss(x_i, labels_i, num_nodes1[i], num_nodes2[i])
-            start = end
-
-        # Total loss
-        loss = loss_clf + loss_sym
-        loss = loss / float(batch_size)
-        return loss
+        self.criterion = nn.BCELoss(reduction='mean')
+        self.train_accuracy = torchmetrics.Accuracy()
+        self.val_accuracy = torchmetrics.Accuracy()
+        self.test_accuracy = torchmetrics.Accuracy()
     
     def precision_at_top_k(self, logits, labels, n1, n2, k=None):
         logits = logits.view(n1, n2)
@@ -720,39 +677,18 @@ class JointPrediction(pl.LightningModule):
         if graph.edata["x"].numel() != 0:
             graph.edata["x"] = graph.edata["x"].permute(0, 2, 1)
         return graph
-    
-    def _prepare_features_for_joint_graph(self, x1, x2, num_node1, num_node2):
-        start1 = 0
-        start2 = 0
-        concat_x = []
-        for i in range(len(num_node1)):
-            size1_i = num_node1[i]
-            size2_i = num_node2[i]
-            end1 = start1 + size1_i
-            end2 = start2 + size2_i
-            # Concatenate features from graph1 and graph2 in a interleaved fashion
-            # as this is the format that the joint graph expects
-            x1_i = x1[start1:end1]
-            x2_i = x2[start2:end2]
-            concat_x.append(x1_i)
-            concat_x.append(x2_i)
-            start1 = end1
-            start2 = end2
-        return torch.cat(concat_x, dim=0)
-
+   
     def step(self, batch):
-        g1, g2, jg, _ = batch
-        device = next(self.pre_trained_model.buffers()).device
+        g1, g2, joint_judge, _ = batch
+        device = next(self.model.parameters()).device
         g1, g2 = g1.to(device), g2.to(device)
-        g1 = self._permute_graph_data_channels(g1)
-        g2 = self._permute_graph_data_channels(g2)
-        _, _, node_emb1 = self.pre_trained_model(g1)
-        _, _, node_emb2 = self.pre_trained_model(g2)
-        num_nodes1, num_nodes2 = g1.batch_num_nodes(), g2.batch_num_nodes()
-        x = self._prepare_features_for_joint_graph(node_emb1, node_emb2, num_nodes1, num_nodes2)
-        x = self.joint_predict_head(x, jg)
-        
-        loss = self.loss_fn(x, jg, num_nodes1, num_nodes2)
+        # g1 = self._permute_graph_data_channels(g1)
+        # g2 = self._permute_graph_data_channels(g2)
+        # _, global_emb1, _ = self.pre_trained_model(g1)
+        # _, global_emb2, _ = self.pre_trained_model(g2)
+        # x = self.projection_layer(global_emb1 + global_emb2).squeeze(-1)
+        x = self.model(g1, g2)
+        loss = self.criterion(x, joint_judge.float())
         return loss, x
 
     def training_step(self, batch, batch_idx):
@@ -761,44 +697,16 @@ class JointPrediction(pl.LightningModule):
         loss, x = self.step(batch)
         self.log("train_loss", loss, on_step=False, on_epoch=True, sync_dist=True)
 
-        g1, g2, jg, _ = batch
-        start = 0
-        top_k = [0, 0, 0]
-        graph_one_unbatched = dgl.unbatch(g1)
-        graph_two_unbatched = dgl.unbatch(g2)
-        joint_graph_unbatched = dgl.unbatch(jg)
-        for i, item in enumerate(joint_graph_unbatched):
-            n_nodes1 = graph_one_unbatched[i].num_nodes()
-            n_nodes2 = graph_two_unbatched[i].num_nodes()
-            size_i = n_nodes1 * n_nodes2
-            end = start + size_i
-            top_k_i = self.precision_at_top_k(
-                x[start: end], 
-                item.edata["label_matrix"], 
-                n_nodes1, 
-                n_nodes2, 
-                k=[1,5,50]
-            )
-            for j in range(len(top_k)):
-                top_k[j] += top_k_i[j]
-            start = end
-
-        # Log the run at every epoch, although this gets reduced via mean to a float
-        batch_size = len(joint_graph_unbatched)
-        self.log("train_top_1", top_k[0] / batch_size, on_step=False, on_epoch=True, sync_dist=True)
-        self.log("train_top_5", top_k[1] / batch_size, on_step=False, on_epoch=True, sync_dist=True)
-        self.log("train_top_50", top_k[2] / batch_size, on_step=False, on_epoch=True, sync_dist=True)
+        train_acc = self.train_accuracy(x, batch[2])                     
+        self.log("train_acc", train_acc, on_step=False, on_epoch=True, sync_dist=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
         loss, x = self.step(batch)
         self.log("val_loss", loss, on_step=False, on_epoch=True, sync_dist=True)
 
-        g1, g2, jg, _ = batch
-        top_k = self.precision_at_top_k(x, jg.edata["label_matrix"], g1.num_nodes(), g2.num_nodes(), k=[1,5,50])
-        self.log("val_top_1", top_k[0], on_step=False, on_epoch=True, sync_dist=True)
-        self.log("val_top_5", top_k[1], on_step=False, on_epoch=True, sync_dist=True)
-        self.log("val_top_50", top_k[2], on_step=False, on_epoch=True, sync_dist=True)
+        val_acc = self.val_accuracy(x, batch[2])                     
+        self.log("val_acc", val_acc, on_step=False, on_epoch=True, sync_dist=True)
         return loss
 
     def test_step(self, batch, batch_idx):
@@ -807,45 +715,26 @@ class JointPrediction(pl.LightningModule):
 
         # Inference
         loss, x = self.step(batch)
-        self.log(f"eval_{split}_loss", loss, on_step=False, on_epoch=True, sync_dist=True)
         
         # Calculate the precision at k with a default sequence of k
-        g1, g2, jg, fn = batch
-        top_k = self.precision_at_top_k(x, jg.edata["label_matrix"], g1.num_nodes(), g2.num_nodes())
-        self.log(f"eval_{split}_top_1", top_k[0], on_step=False, on_epoch=True, sync_dist=True)
-        self.log(f"eval_{split}_top_5", top_k[4], on_step=False, on_epoch=True, sync_dist=True)
-        self.log(f"eval_{split}_top_50", top_k[9], on_step=False, on_epoch=True, sync_dist=True)
-
-        # log top 50 pairs
-        logits_flat = x.flatten()
-        _, top_50_indices = torch.topk(logits_flat, min(len(logits_flat), 50))
+        _, _, joint_judge, file_name = batch
+        test_acc = self.test_accuracy(x, joint_judge)                     
+        self.log(f"eval_{split}_acc", test_acc, on_step=False, on_epoch=True, sync_dist=True)
 
         self.test_step_outputs.append({
-            "file_names": fn,
+            "file_names": file_name,
             "loss": loss.item(),
-            "top_k": top_k,
-            "true_label_num": torch.sum(jg.edata["label_matrix"]).item(),
-            "top_50_pairs": [(x.item() // g2.num_nodes(), x.item() % g2.num_nodes()) for x in top_50_indices]
+            "pred": x.item(),
+            "label": joint_judge.item()
         })
         return loss
 
     def on_test_epoch_end(self):
-        # Get the split we are using from the dataset
-        split = self.test_dataloader()[0].dataset.split
-        all_top_k = np.stack([x["top_k"] for x in self.test_step_outputs])
-
-        k_seq = metrics.get_k_sequence()
-        top_k = metrics.calculate_precision_at_k_from_sequence(all_top_k, use_percent=False)
-        top_k_results = ""
-        for k, result in zip(k_seq, top_k):
-            top_k_results += f"{k} {result:.4f}%\n"
-        self.print(f"Eval top-k results on {split} set:\n{top_k_results[:-2]}")
-
         # Log results to a csv file
         result = []
         for x in self.test_step_outputs:
-            result.append((x["file_names"], x["top_k"][0], x["top_k"][5], f"{x['loss']:.4f}", x["true_label_num"], x["top_50_pairs"]))
-        result.sort(key=lambda x: -float(x[3]))
+            result.append((x["file_names"], f"{x['loss']:.2f}", f"{x['pred']:.2f}", x["label"]))
+        result.sort(key=lambda x: -float(x[1]))
         self.test_results = result
 
     def configure_optimizers(self):

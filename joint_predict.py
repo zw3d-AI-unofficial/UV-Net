@@ -14,8 +14,13 @@ parser = argparse.ArgumentParser("Train a joint prediction model")
 parser.add_argument(
     "traintest", choices=("train", "test", "traintest"), help="Whether to train or test"
 )
-parser.add_argument("--dataset_path", type=str, help="Path to dataset")
-parser.add_argument("--latent_dim", type=int, default=128, help="Latent dimension for UV-Net's embeddings")
+parser.add_argument(
+    "--dataset",
+    type=str,
+    default="/home/share/brep/zw3d/zw3d-joinable-dataset",
+    help="Dataset path."
+)
+parser.add_argument("--latent_dim", type=int, default=384, help="Latent dimension for UV-Net's embeddings")
 parser.add_argument("--out_dim", type=int, default=64, help="Output dimension for SimCLR projection head")
 parser.add_argument("--batch_size", type=int, default=8, help="Batch size")
 parser.add_argument(
@@ -61,18 +66,14 @@ parser.add_argument(
     help="Use random rotate",
 )
 parser.add_argument(
-    "--channels",
+    "--input_features",
     type=str,
-    default="points,trimming_mask",
-    help="Input channels to use as a string separated by commas.\
-            Can include: points, normals, tangents, trimming_mask"
-)
-parser.add_argument(
-    "--max_node_count",
-    type=int,
-    default=1024,
-    help="Restrict training data to graph pairs with under this number of nodes.\
-            Set to 0 to train on all data."
+    default="entity_types,area,length,points,normals,tangents,trimming_mask",
+    help="Input features to use as a string separated by commas.\
+            Can include: points, normals, tangents, trimming_mask,\
+            axis_pos, axis_dir, bounding_box, entity_types\
+            area, circumference, param_1, param_2\
+            length, radius, start_point, middle_point, end_point"
 )
 parser.add_argument(
     "--node_emb_dim",
@@ -106,8 +107,51 @@ parser.add_argument(
 parser.add_argument(
     "--lr",
     type=float,
-    default=0.001,
+    default=0.0001,
     help="Initial learning rate."
+)
+parser.add_argument(
+    "--test_split",
+    type=str,
+    default="test",
+    choices=("train", "val", "test"),
+    help="Test split to use during evaluation."
+)
+parser.add_argument(
+    "--n_head",
+    type=int,
+    default=8,
+    help="Number of attention heads."
+)
+parser.add_argument(
+    "--n_layer_gat",
+    type=int,
+    default=2,
+    help="Number of Graph-Attention layers."
+)
+parser.add_argument(
+    "--n_layer_sat",
+    type=int,
+    default=2,
+    help="Number of Self-Attention layers."
+)
+parser.add_argument(
+    "--n_layer_cat",
+    type=int,
+    default=2,
+    help="Number of Cross-Attention layers."
+)
+parser.add_argument(
+    "--bias",
+    action="store_true",
+    default=False,
+    help="Use bias in mlp."
+)
+parser.add_argument(
+    "--dropout",
+    type=float,
+    default=0.0,
+    help="Dropout rate."
 )
 
 parser = Trainer.add_argparse_args(parser)
@@ -133,12 +177,12 @@ checkpoint_callback = ModelCheckpoint(
 
 if args.wandb:
     if args.checkpoint is not None and args.wandb_run != "":
-        wandb.init(project="joinable-pretrained", id=args.wandb_run, resume="allow")
+        wandb.init(project="joinable_binary", id=args.wandb_run, resume="allow")
     trainer = Trainer.from_argparse_args(
         args,
         callbacks=[checkpoint_callback],
         logger=WandbLogger(
-            project="joinable-pretrained", 
+            project="joinable_binary", 
             entity="fusiqiao101", 
             name=month_day+"_"+hour_min_second
         ),
@@ -172,14 +216,18 @@ results/{args.experiment_name}/{month_day}/{hour_min_second}/best.ckpt
     """
     )
     model = JointPrediction(
-        latent_dim=args.latent_dim, 
-        node_emb_dim=args.node_emb_dim,
-        out_dim=args.out_dim, 
-        lr=args.lr, 
-        channels=args.channels
+        input_features=args.input_features,
+        emb_dim=args.latent_dim,
+        n_head=args.n_head,
+        n_layer_gat=args.n_layer_gat,
+        n_layer_sat=args.n_layer_sat,
+        n_layer_cat=args.n_layer_cat,
+        bias=args.bias,
+        dropout=args.dropout,
+        lr=args.lr
     )
-    train_data = JointGraphDataset(root_dir=args.dataset_path, split="train", random_rotate=args.random_rotate, max_node_count=args.max_node_count, label_scheme=args.train_label_scheme)
-    val_data = JointGraphDataset(root_dir=args.dataset_path, split="val", max_node_count=16384, label_scheme=args.train_label_scheme)
+    train_data = JointGraphDataset(root_dir=args.dataset, split="train", random_rotate=args.random_rotate, max_node_count=2048)
+    val_data = JointGraphDataset(root_dir=args.dataset, split="val", max_node_count=16384)
     train_loader = train_data.get_dataloader(batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
     val_loader = val_data.get_dataloader(batch_size=1, shuffle=False, num_workers=args.num_workers, drop_last=False)
     trainer.fit(model, train_loader, val_loader)
@@ -192,23 +240,27 @@ if args.traintest == "test" or args.traintest == "traintest":
     else:
         checkpoint = checkpoint_path + "/best.ckpt"
     model = JointPrediction.load_from_checkpoint(
-        latent_dim=args.latent_dim, 
-        node_emb_dim=args.node_emb_dim,
-        out_dim=args.out_dim, 
-        lr=args.lr, 
-        channels=args.channels, 
+        input_features=args.input_features,
+        emb_dim=args.latent_dim,
+        n_head=args.n_head,
+        n_layer_gat=args.n_layer_gat,
+        n_layer_sat=args.n_layer_sat,
+        n_layer_cat=args.n_layer_cat,
+        bias=args.bias,
+        dropout=args.dropout,
+        lr=args.lr,
         checkpoint_path=checkpoint
     )
     if args.gpus is not None:
         model = model.cuda()
-    test_data = JointGraphDataset(root_dir=args.dataset_path, split="test", label_scheme=args.test_label_scheme)
+    test_data = JointGraphDataset(root_dir=args.dataset, split=args.test_split)
     test_loader = test_data.get_dataloader(batch_size=1, shuffle=False, num_workers=args.num_workers, drop_last=False)
     trainer.test(model, test_dataloaders=[test_loader], verbose=False)
 
     # dump result
     with open(pathlib.Path(checkpoint_path) / "results.csv", mode='w', newline='') as file:
         writer = csv.writer(file)
-        writer.writerow(["file_name", "top_1", "top_5", "loss", "true_label_num", "top_50_pairs"])
+        writer.writerow(["file_name", "loss", "pred", "label"])
         for row in model.test_results:
             writer.writerow(row)
     
