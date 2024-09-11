@@ -109,7 +109,7 @@ class JointBaseDataset(BaseDataset):
 
 class JointGraphDataset(JointBaseDataset):
     # The different types of labels for B-Rep entities
-    label_map = {
+    LABEL_MAP = {
         "Non-joint": 0,
         "Joint": 1,
         "Ambiguous": 2,  # aka Sibling
@@ -117,6 +117,23 @@ class JointGraphDataset(JointBaseDataset):
         "AmbiguousEquivalent": 4,
         "Hole": 5,
         "HoleEquivalent": 6,
+    }
+
+    SURFACE_GEOM_FEAT_MAP = {
+        "type": 6,
+        "parameter": 2,
+        "axis": 6,
+        "box": 6,
+        "area": 1,
+        "circumference": 1
+    }
+
+    CURVE_GEOM_FEAT_MAP = {
+        "type": 4,
+        "parameter": 2,
+        "axis": 6,
+        "box": 6,
+        "length": 1
     }
 
     def __init__(
@@ -127,8 +144,7 @@ class JointGraphDataset(JointBaseDataset):
         seed=42,
         center_and_scale=True,
         max_node_count=0,
-        label_scheme=None,
-        channels="points,normals,tangents,trimming_mask"
+        label_scheme=None
     ):
         """
         Load the Fusion 360 Gallery joints dataset from graph data
@@ -140,9 +156,6 @@ class JointGraphDataset(JointBaseDataset):
         :param max_node_count: int Exclude joints with more than this number of combined graph nodes
         :param label_scheme: Label remapping scheme.
                 Must be one of None, off, ambiguous_on, hole_on, ambiguous_hole_on
-        :param channels: Input features to use as a string separated by commas. Can include:
-                points, normals, trimming_mask, entity_types, is_face, area, length,
-                face_reversed, edge_reversed, reversed, convexity, dihedral_angle"
         """
         super().__init__(
             root_dir,
@@ -157,9 +170,6 @@ class JointGraphDataset(JointBaseDataset):
         self.graphs = []
         # The graph file used to load g1 and g2
         self.graph_files = []
-        # Parse the input features requested
-        self.channels = channels.split(',')
-
         # Get the joint files for our split
         joint_files = self.get_joint_files()
 
@@ -184,25 +194,34 @@ class JointGraphDataset(JointBaseDataset):
 
     def convert_to_float32(self):
         for i in range(len(self.graphs)):
-            self.graphs[i][0].ndata["x"] = self.graphs[i][0].ndata["x"].type(torch.FloatTensor)
-            self.graphs[i][0].edata["x"] = self.graphs[i][0].edata["x"].type(torch.FloatTensor)
-            self.graphs[i][1].ndata["x"] = self.graphs[i][1].ndata["x"].type(torch.FloatTensor)
-            self.graphs[i][1].edata["x"] = self.graphs[i][1].edata["x"].type(torch.FloatTensor)
+            self.graphs[i][0].ndata["uv"] = self.graphs[i][0].ndata["uv"].type(torch.FloatTensor)
+            self.graphs[i][0].edata["uv"] = self.graphs[i][0].edata["uv"].type(torch.FloatTensor)
+            self.graphs[i][1].ndata["uv"] = self.graphs[i][1].ndata["uv"].type(torch.FloatTensor)
+            self.graphs[i][1].edata["uv"] = self.graphs[i][1].edata["uv"].type(torch.FloatTensor)
 
     def __getitem__(self, idx):
         graph1_name, graph2_name = self.graph_files[idx]
         joint_graph_name = self.files[idx]
         graph1, graph2, joint_graph = self.graphs[idx]
         # Remap the augmented labels
-        joint_graph = self.remap_labels(joint_graph, self.labels_on, self.labels_off)
+        joint_graph = self.remap_labels(joint_graph, self.labels_on, self.labels_off)        
+        graph1, graph2, joint_graph = self.graphs[idx]
         if self.random_rotate:
             rotation = util.get_random_rotation()
-            graph1.ndata["x"] = util.rotate_uvgrid(graph1.ndata["x"], rotation)
-            graph1.edata["x"] = util.rotate_uvgrid(graph1.edata["x"], rotation)
+            graph1.ndata["uv"] = util.rotate_uvgrid(graph1.ndata["uv"], rotation)
+            graph1.edata["uv"] = util.rotate_uvgrid(graph1.edata["uv"], rotation)
+            graph1.ndata["axis"] = util.rotate_uvgrid(graph1.ndata["axis"], rotation)
+            graph1.edata["axis"] = util.rotate_uvgrid(graph1.edata["axis"], rotation)
+            graph1.ndata["box"] = util.rotate_uvgrid(graph1.ndata["box"], rotation)
+            graph1.edata["box"] = util.rotate_uvgrid(graph1.edata["box"], rotation)
 
             rotation = util.get_random_rotation()
-            graph2.ndata["x"] = util.rotate_uvgrid(graph2.ndata["x"], rotation)
-            graph2.edata["x"] = util.rotate_uvgrid(graph2.edata["x"], rotation)
+            graph2.ndata["uv"] = util.rotate_uvgrid(graph2.ndata["uv"], rotation)
+            graph2.edata["uv"] = util.rotate_uvgrid(graph2.edata["uv"], rotation)
+            graph2.ndata["axis"] = util.rotate_uvgrid(graph2.ndata["axis"], rotation)
+            graph2.edata["axis"] = util.rotate_uvgrid(graph2.edata["axis"], rotation)
+            graph2.ndata["box"] = util.rotate_uvgrid(graph2.ndata["box"], rotation)
+            graph2.edata["box"] = util.rotate_uvgrid(graph2.edata["box"], rotation)
         return [graph1, graph2, joint_graph, (graph1_name, graph2_name, joint_graph_name)]
 
     def _collate(self, batch):
@@ -235,17 +254,17 @@ class JointGraphDataset(JointBaseDataset):
         label_matrix = joint_graph.edata["label_matrix"]
         # Turn the labels we want on, on
         for label_on in labels_on:
-            label_matrix[label_matrix == JointGraphDataset.label_map[label_on]] = 1
+            label_matrix[label_matrix == JointGraphDataset.LABEL_MAP[label_on]] = 1
         # Turn the labels we want off, off
         for label_off in labels_off:
-            label_matrix[label_matrix == JointGraphDataset.label_map[label_off]] = 0
+            label_matrix[label_matrix == JointGraphDataset.LABEL_MAP[label_off]] = 0
         joint_graph.edata["label_matrix"] = label_matrix
         return joint_graph
 
     @staticmethod
     def parse_label_scheme_arg(label_scheme_string=None):
         """Parse the input feature lists from the arg string"""
-        all_labels = list(JointGraphDataset.label_map.keys())
+        all_labels = list(JointGraphDataset.LABEL_MAP.keys())
         all_labels_set = set(all_labels)
         if label_scheme_string is None:
             return None, None
@@ -306,22 +325,48 @@ class JointGraphDataset(JointBaseDataset):
     def scale_features(self, g1, g2):
         """Scale the points for both graphs"""
         # Get the combined bounding box
-        center1, center2, scale = JointGraphDataset.get_center_and_scale(g1.ndata["x"], g2.ndata["x"])
-        g1.ndata["x"][:, :, :, :3] -= center1
-        g1.ndata["x"][:, :, :, :3] *= scale
-        if g1.edata["x"].numel() != 0:
-            g1.edata["x"][:, :, :3] -= center1
-            g1.edata["x"][:, :, :3] *= scale
+        center1, center2, scale = JointGraphDataset.get_center_and_scale(g1.ndata["uv"], g2.ndata["uv"])
+        g1.ndata["uv"][:, :, :, :3] -= center1
+        g1.ndata["uv"][:, :, :, :3] *= scale
         # Check we aren't too far out of bounds due to the masked surface
-        if torch.max(g1.ndata["x"][:, :, :, :3]) > 2.0 or torch.max(g1.ndata["x"][:, :, :, :3]) < -2.0:
+        if torch.max(g1.ndata["uv"][:, :, :, :3]) > 2.0 or torch.max(g1.ndata["uv"][:, :, :, :3]) < -2.0:
             return False
-        g2.ndata["x"][:, :, :, :3] -= center2
-        g2.ndata["x"][:, :, :, :3] *= scale
-        if g2.edata["x"].numel() != 0:
-            g2.edata["x"][:, :, :3] -= center2
-            g2.edata["x"][:, :, :3] *= scale
-        if torch.max(g2.ndata["x"][:, :, :, :3]) > 2.0 or torch.max(g2.ndata["x"][:, :, :, :3]) < -2.0:
+        g2.ndata["uv"][:, :, :, :3] -= center2
+        g2.ndata["uv"][:, :, :, :3] *= scale
+        if torch.max(g2.ndata["uv"][:, :, :, :3]) > 2.0 or torch.max(g2.ndata["uv"][:, :, :, :3]) < -2.0:
             return False
+        
+        g1.ndata["axis"][:, :3] -= center1
+        g1.ndata["axis"][:, :3] *= scale
+        g1.edata["axis"][:, :3] -= center1
+        g1.edata["axis"][:, :3] *= scale        
+        g1.ndata["box"][:, :3] -= center1
+        g1.ndata["box"][:, :3] *= scale
+        g1.edata["box"][:, :3] -= center1
+        g1.edata["box"][:, :3] *= scale        
+        g1.ndata["box"][:, 3:] -= center1
+        g1.ndata["box"][:, 3:] *= scale
+        g1.edata["box"][:, 3:] -= center1
+        g1.edata["box"][:, 3:] *= scale
+        g1.ndata["area"] *= scale * scale
+        g1.ndata["circumference"] *= scale
+        g1.edata["length"] *= scale
+
+        g2.ndata["axis"][:, :3] -= center2
+        g2.ndata["axis"][:, :3] *= scale
+        g2.edata["axis"][:, :3] -= center2
+        g2.edata["axis"][:, :3] *= scale        
+        g2.ndata["box"][:, :3] -= center2
+        g2.ndata["box"][:, :3] *= scale
+        g2.edata["box"][:, :3] -= center2
+        g2.edata["box"][:, :3] *= scale        
+        g2.ndata["box"][:, 3:] -= center2
+        g2.ndata["box"][:, 3:] *= scale
+        g2.edata["box"][:, 3:] -= center2
+        g2.edata["box"][:, 3:] *= scale
+        g2.ndata["area"] *= scale * scale
+        g2.ndata["circumference"] *= scale
+        g2.edata["length"] *= scale
         return True
 
     def load_joint(self, joint_file_name, center_and_scale=True):
@@ -344,7 +389,7 @@ class JointGraphDataset(JointBaseDataset):
             if total_nodes > self.max_node_count:
                 return None
         # Get the joint label matrix
-        label_matrix = self.get_label_matrix(
+        label_matrix, joint_type_matrix = self.get_label_matrix(
             joint_data,
             face_count1, face_count2,
             edge_count1, edge_count2
@@ -352,7 +397,7 @@ class JointGraphDataset(JointBaseDataset):
         if 1 not in label_matrix:
             return None
         # Create the joint graph from the label matrix
-        joint_graph = self.make_joint_graph(g1, g2, label_matrix)
+        joint_graph = self.make_joint_graph(g1, g2, label_matrix, joint_type_matrix)
         # Scale geometry features from both graphs with a common scale
         if center_and_scale:
             scale_good = self.scale_features(g1, g2)
@@ -394,6 +439,7 @@ class JointGraphDataset(JointBaseDataset):
         # 5 - Hole
         # 6 - Hole equivalents
         label_matrix = torch.zeros((face_count1, face_count2), dtype=torch.long)
+        joint_type_matrix = torch.zeros((face_count1, face_count2), dtype=torch.long)
         for joint in joints:  
             entity1 = joint["geometry_or_origin_one"]["entity_one"]
             entity1_index = entity1["index"]
@@ -401,6 +447,10 @@ class JointGraphDataset(JointBaseDataset):
             entity2 = joint["geometry_or_origin_two"]["entity_one"]
             entity2_index = entity2["index"]
             entity2_type = entity2["type"]
+            if joint["joint_type"] == "Coincident":
+                joint_type = 0
+            else:
+                joint_type = 1
             # Offset the joint indices for use in the label matrix
             entity1_index = self.offset_joint_index(
                 entity1_index, entity1_type, face_count1, entity_count1)
@@ -420,15 +470,16 @@ class JointGraphDataset(JointBaseDataset):
                     if eq1_index >= face_count1 or eq2_index >= face_count2:
                         continue
                     # Only set non-joints, we don't want to replace other labels
-                    if label_matrix[eq1_index][eq2_index] == self.label_map["Non-joint"]:
-                        label_matrix[eq1_index][eq2_index] = self.label_map["JointEquivalent"]
-        
+                    if label_matrix[eq1_index][eq2_index] == self.LABEL_MAP["Non-joint"]:
+                        label_matrix[eq1_index][eq2_index] = self.LABEL_MAP["JointEquivalent"]
+                        joint_type_matrix[entity1_index][entity2_index] = joint_type
             # Set the user selected joint indices
             if entity1_index < face_count1 and entity2_index < face_count2:
-                label_matrix[entity1_index][entity2_index] = self.label_map["Joint"]
-        return label_matrix
+                label_matrix[entity1_index][entity2_index] = self.LABEL_MAP["Joint"]
+                joint_type_matrix[entity1_index][entity2_index] = joint_type
+        return label_matrix, joint_type_matrix
 
-    def make_joint_graph(self, graph1, graph2, label_matrix):
+    def make_joint_graph(self, graph1, graph2, label_matrix, joint_type_matrix):
         """Create a joint graph connecting graph1 and graph2 densely"""
         nodes_indices_first_graph = torch.arange(graph1.num_nodes())
         # We want to treat both graphs as one, so order the indices of the second graph's nodes
@@ -440,6 +491,7 @@ class JointGraphDataset(JointBaseDataset):
         # edges_between_graphs = torch.cat((edges_between_graphs_1, edges_between_graphs_2), dim=0)
         joint_graph = dgl.graph((edges_between_graphs_1[0, :], edges_between_graphs_1[1, :]))
         joint_graph.edata["label_matrix"] = label_matrix.view(-1)
+        joint_graph.edata["joint_type_matrix"] = joint_type_matrix.view(-1)
         return joint_graph
 
     def get_joint_equivalents(self, geometry, face_count, entity_count):
