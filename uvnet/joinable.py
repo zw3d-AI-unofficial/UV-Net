@@ -256,7 +256,7 @@ class GraphEncoder(nn.Module):
 
     def __init__(
             self, 
-            input_features=["entity_types","area","length","points","normals","tangents","trimming_mask"],
+            input_features=["type","area","length","points","normals","tangents","trimming_mask"],
             emb_dim=384,
             n_head=8,
             n_layer_gat=2,
@@ -373,6 +373,7 @@ class JointPairHead(nn.Module):
 
     def __init__(self, input_dim, n_layer, bias=False, dropout=0.0):
         super().__init__()
+        self.ln = LayerNorm(input_dim, bias=bias)
         self.projection_layer = nn.ModuleList()
         for _ in range(n_layer):
             self.projection_layer.append(nn.Linear(input_dim, input_dim, bias=bias))
@@ -384,6 +385,7 @@ class JointPairHead(nn.Module):
     def forward(self, x, jg):
         src_nodes, dst_nodes = jg.edges()
         x = x[src_nodes, :] + x[dst_nodes, :]
+        x = self.ln(x)
         for layer in self.projection_layer:
             x = layer(x)
         logits = self.output_layer(x).squeeze()
@@ -394,6 +396,7 @@ class JointTypeHead(nn.Module):
 
     def __init__(self, input_dim, n_layer, bias=False, dropout=0.0):
         super().__init__()
+        self.ln = LayerNorm(input_dim, bias=bias)
         self.projection_layer = nn.ModuleList()
         for _ in range(n_layer):
             self.projection_layer.append(nn.Linear(input_dim, input_dim, bias=bias))
@@ -406,6 +409,7 @@ class JointTypeHead(nn.Module):
         ids = torch.where(jg.edata["label_matrix"] == 1)[0].long()
         src_nodes, dst_nodes = jg.edges()
         x = x[src_nodes[ids], :] + x[dst_nodes[ids], :]
+        x = self.ln(x)
         for layer in self.projection_layer:
             x = layer(x)
         logits = self.output_layer(x).squeeze()
@@ -415,7 +419,7 @@ class JointTypeHead(nn.Module):
 class JoinABLe(nn.Module):
     def __init__(
             self, 
-            input_features=["entity_types","area","length","points","normals","tangents","trimming_mask"],
+            input_features=["type","area","length","points","normals","tangents","trimming_mask"],
             emb_dim=384,
             n_head=8,
             n_layer_gat=2,

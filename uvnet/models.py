@@ -607,7 +607,7 @@ class Contrastive(pl.LightningModule):
 class JointPrediction(pl.LightningModule):
     def __init__(
             self,
-            input_features=["entity_types","area","length","points","normals","tangents","trimming_mask"],
+            input_features=["type","area","length","points","normals","tangents","trimming_mask"],
             emb_dim=384,
             n_head=8,
             n_layer_gat=2,
@@ -616,6 +616,7 @@ class JointPrediction(pl.LightningModule):
             bias=False,
             dropout=0.0,
             lr=1e-3,
+            loss_fn="mle",
             # pretrained_model=None
         ):
         super().__init__()
@@ -662,74 +663,7 @@ class JointPrediction(pl.LightningModule):
         self.lr = lr
         self.test_step_outputs = []
         self.test_results = None
-
-    def symmetric_loss(self, x, labels, n1, n2):
-        x_2d = x.view(n1, n2)
-        labels_2d = labels.view(n1, n2)
-        ys_2d = torch.nonzero(labels_2d)
-        loss1 = F.cross_entropy(x_2d[ys_2d[:, 0], :], ys_2d[:, 1], reduction="mean")
-        loss2 = F.cross_entropy(x_2d[:, ys_2d[:, 1]].transpose(0, 1), ys_2d[:, 0], reduction="mean")
-        loss = 0.5 * (loss1 + loss2)
-        return loss
-    
-    def soft_cross_entropy(self, x, labels):
-        logprobs = F.log_softmax(x, dim=-1)
-        # loss = -(labels * logprobs).sum()
-        loss = -torch.dot(labels, logprobs)
-        return loss
-
-    def mle_loss(self, x, labels):
-        # Normalize the ground truth matrix into a PDF
-        labels = labels / labels.sum()
-        labels = labels.view(-1)
-        # Compare the predicted and ground truth PDFs
-        loss = self.soft_cross_entropy(x, labels)
-        return loss
-    
-    def loss_fn(self, pair_logits, type_logits, joint_graph, num_nodes1, num_nodes2):
-        joint_graph_unbatched = dgl.unbatch(joint_graph)
-        batch_size = len(joint_graph_unbatched)
-        size_of_each_joint_graph = [np.prod(list(item.edata["label_matrix"].shape)) for item in joint_graph_unbatched]
-
-        # Compute loss individually with each joint in the batch
-        loss_clf = 0
-        loss_sym = 0
-        loss_type = 0
-        start = 0        
-
-        for i in range(batch_size):
-            size_i = size_of_each_joint_graph[i]
-            end = start + size_i
-            pair_logits_i = pair_logits[start:end]
-            pair_labels_i = joint_graph_unbatched[i].edata["label_matrix"]
-            # Classification loss
-            loss_clf += self.mle_loss(pair_logits_i, pair_labels_i)
-            # Symmetric loss
-            loss_sym += self.symmetric_loss(pair_logits_i, pair_labels_i, num_nodes1[i], num_nodes2[i])
-            # Type loss
-            if type_logits is not None:
-                type_logits_i = type_logits[start:end]
-                type_label_i = joint_graph_unbatched[i].edata["joint_type_matrix"][pair_labels_i == 1]
-                loss_type += F.cross_entropy(type_logits_i, type_label_i)
-            start = end
-
-        # Total loss
-        loss = loss_clf + loss_sym + loss_type
-        loss = loss / float(batch_size)
-        return loss
-    
-    def precision_at_top_k(self, logits, labels, n1, n2, k=None):
-        logits = logits.view(n1, n2)
-        labels = labels.view(n1, n2)
-        if k is None:
-            k = metrics.get_k_sequence()
-        return metrics.hit_at_top_k(logits, labels, k=k)
-    
-    def _permute_graph_data_channels(self, graph):
-        graph.ndata["x"] = graph.ndata["x"].permute(0, 3, 1, 2)
-        if graph.edata["x"].numel() != 0:
-            graph.edata["x"] = graph.edata["x"].permute(0, 2, 1)
-        return graph
+        self.loss_fn = loss_fn
 
     def step(self, batch):
         g1, g2, jg, _ = batch        
@@ -737,7 +671,7 @@ class JointPrediction(pl.LightningModule):
         g1, g2, jg = g1.to(device), g2.to(device), jg.to(device)
         pair_logits, type_logits = self.model(g1, g2, jg)
         num_nodes1, num_nodes2 = g1.batch_num_nodes(), g2.batch_num_nodes()
-        loss = self.loss_fn(pair_logits, type_logits, jg, num_nodes1, num_nodes2)
+        loss = self.compute_loss(pair_logits, type_logits, jg, num_nodes1, num_nodes2)
         return loss, pair_logits, type_logits
 
     def training_step(self, batch, batch_idx):
@@ -849,3 +783,80 @@ class JointPrediction(pl.LightningModule):
                 "monitor": "val_loss",
             },
         }
+    
+    def bce_loss(self, x, ys_matrix, pos_weight=1.0):
+        x = x.unsqueeze(1)
+        ys_matrix = ys_matrix.flatten().float().unsqueeze(1)
+        loss_fn = nn.BCEWithLogitsLoss(reduction="mean", pos_weight=torch.tensor([pos_weight]).to(x.device))
+        return loss_fn(x, ys_matrix)
+    
+    def soft_cross_entropy(self, x, labels):
+        logprobs = F.log_softmax(x, dim=-1)
+        # loss = -(labels * logprobs).sum()
+        loss = -torch.dot(labels, logprobs)
+        return loss
+
+    def mle_loss(self, x, labels):
+        # Normalize the ground truth matrix into a PDF
+        labels = labels / labels.sum()
+        labels = labels.view(-1)
+        # Compare the predicted and ground truth PDFs
+        loss = self.soft_cross_entropy(x, labels)
+        return loss
+
+    def symmetric_loss(self, x, labels, n1, n2):
+        x_2d = x.view(n1, n2)
+        labels_2d = labels.view(n1, n2)
+        ys_2d = torch.nonzero(labels_2d)
+        loss1 = F.cross_entropy(x_2d[ys_2d[:, 0], :], ys_2d[:, 1], reduction="mean")
+        loss2 = F.cross_entropy(x_2d[:, ys_2d[:, 1]].transpose(0, 1), ys_2d[:, 0], reduction="mean")
+        loss = 0.5 * (loss1 + loss2)
+        return loss
+    
+    def compute_loss(self, pair_logits, type_logits, joint_graph, num_nodes1, num_nodes2):
+        joint_graph_unbatched = dgl.unbatch(joint_graph)
+        batch_size = len(joint_graph_unbatched)
+        size_of_each_joint_graph = [np.prod(list(item.edata["label_matrix"].shape)) for item in joint_graph_unbatched]
+
+        # Compute loss individually with each joint in the batch
+        loss_clf = 0
+        loss_sym = 0
+        loss_type = 0
+        start = 0        
+
+        for i in range(batch_size):
+            size_i = size_of_each_joint_graph[i]
+            end = start + size_i
+            pair_logits_i = pair_logits[start:end]
+            pair_labels_i = joint_graph_unbatched[i].edata["label_matrix"]
+            # # Classification loss
+            # if self.loss_fn == "bce":
+            #     loss_clf += self.bce_loss(pair_logits_i, pair_labels_i)
+            # elif self.loss_fn == "mle":
+            #     loss_clf += self.mle_loss(pair_logits_i, pair_labels_i)
+            # Symmetric loss
+            loss_sym += self.symmetric_loss(pair_logits_i, pair_labels_i, num_nodes1[i], num_nodes2[i])
+            # Type loss
+            if type_logits is not None:
+                type_logits_i = type_logits[start:end]
+                type_label_i = joint_graph_unbatched[i].edata["joint_type_matrix"][pair_labels_i == 1]
+                loss_type += F.cross_entropy(type_logits_i, type_label_i)
+            start = end
+
+        # Total loss
+        loss = loss_clf + loss_sym + loss_type
+        loss = loss / float(batch_size)
+        return loss
+    
+    def precision_at_top_k(self, logits, labels, n1, n2, k=None):
+        logits = logits.view(n1, n2)
+        labels = labels.view(n1, n2)
+        if k is None:
+            k = metrics.get_k_sequence()
+        return metrics.hit_at_top_k(logits, labels, k=k)
+    
+    def _permute_graph_data_channels(self, graph):
+        graph.ndata["x"] = graph.ndata["x"].permute(0, 3, 1, 2)
+        if graph.edata["x"].numel() != 0:
+            graph.edata["x"] = graph.edata["x"].permute(0, 2, 1)
+        return graph

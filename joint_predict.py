@@ -23,14 +23,8 @@ parser.add_argument(
 parser.add_argument(
     "--latent_dim", 
     type=int, 
-    default=128, 
+    default=512, 
     help="Latent dimension for UV-Net's embeddings"
-)
-parser.add_argument(
-    "--out_dim", 
-    type=int, 
-    default=64, 
-    help="Output dimension for SimCLR projection head"
 )
 parser.add_argument(
     "--batch_size", 
@@ -83,24 +77,17 @@ parser.add_argument(
 parser.add_argument(
     "--input_features",
     type=str,
-    default="entity_types,area,length,points,normals,tangents,trimming_mask",
+    default="type,area,length,points,normals,tangents,trimming_mask",
     help="Input features to use as a string separated by commas.\
             Can include: points, normals, tangents, trimming_mask,\
-            axis_pos, axis_dir, bounding_box, entity_types\
-            area, circumference, param_1, param_2\
-            length, radius, start_point, middle_point, end_point"
+            axis_pos, axis_dir, bounding_box, type\
+            area, circumference\
+            length, start_point, middle_point, end_point"
 )
 parser.add_argument(
     "--max_node_count",
     type=int,
     default=1024,
-    help="Restrict training data to graph pairs with under this number of nodes.\
-            Set to 0 to train on all data."
-)
-parser.add_argument(
-    "--node_emb_dim",
-    type=int,
-    default=64,
     help="Restrict training data to graph pairs with under this number of nodes.\
             Set to 0 to train on all data."
 )
@@ -174,6 +161,13 @@ parser.add_argument(
     type=float,
     default=0.0,
     help="Dropout rate."
+)    
+parser.add_argument(
+    "--loss_fn",
+    type=str,
+    choices=("bce", "mle"),
+    default="mle",
+    help="Loss to use."
 )
 
 parser = Trainer.add_argparse_args(parser)
@@ -208,7 +202,6 @@ if args.wandb:
             entity="fusiqiao101", 
             name=month_day+"_"+hour_min_second
         ),
-        accelerator="ddp",
         resume_from_checkpoint=args.checkpoint
     )
 else:
@@ -218,7 +211,6 @@ else:
         logger=TensorBoardLogger(
             str(results_path), name=month_day, version=hour_min_second,
         ),
-        accelerator="ddp",
         resume_from_checkpoint=args.checkpoint
     )
 
@@ -246,7 +238,8 @@ results/{args.experiment_name}/{month_day}/{hour_min_second}/best.ckpt
         n_layer_cat=args.n_layer_cat,
         bias=args.bias,
         dropout=args.dropout,
-        lr=args.lr
+        lr=args.lr,
+        loss_fn=args.loss_fn
     )
     train_data = JointGraphDataset(root_dir=args.dataset, split="train", random_rotate=args.random_rotate, max_node_count=args.max_node_count, label_scheme=args.train_label_scheme)
     val_data = JointGraphDataset(root_dir=args.dataset, split="val", max_node_count=16384, label_scheme=args.train_label_scheme)
@@ -258,7 +251,6 @@ if args.traintest == "test" or args.traintest == "traintest":
     if args.traintest == "test":
         assert args.checkpoint is not None, "Expected the --checkpoint argument to be provided"
         checkpoint = args.checkpoint
-        checkpoint_path = '/'.join(checkpoint.split('/')[:-1])
     else:
         checkpoint = checkpoint_path + "/best.ckpt"
     model = JointPrediction.load_from_checkpoint(
@@ -271,6 +263,7 @@ if args.traintest == "test" or args.traintest == "traintest":
         bias=args.bias,
         dropout=args.dropout,
         lr=args.lr,
+        loss_fn=args.loss_fn,
         checkpoint_path=checkpoint
     )
     if args.gpus is not None:
