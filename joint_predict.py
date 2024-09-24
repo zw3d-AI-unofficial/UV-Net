@@ -20,9 +20,18 @@ parser.add_argument(
     default="/home/share/brep/zw3d/zw3d-joinable-dataset",
     help="Dataset path."
 )
-parser.add_argument("--latent_dim", type=int, default=384, help="Latent dimension for UV-Net's embeddings")
-parser.add_argument("--out_dim", type=int, default=64, help="Output dimension for SimCLR projection head")
-parser.add_argument("--batch_size", type=int, default=8, help="Batch size")
+parser.add_argument(
+    "--latent_dim", 
+    type=int, 
+    default=512, 
+    help="Latent dimension for UV-Net's embeddings"
+)
+parser.add_argument(
+    "--batch_size", 
+    type=int, 
+    default=16, 
+    help="Batch size"
+)
 parser.add_argument(
     "--num_workers",
     type=int,
@@ -68,35 +77,12 @@ parser.add_argument(
 parser.add_argument(
     "--input_features",
     type=str,
-    default="entity_types,area,length,points,normals,tangents,trimming_mask",
+    default="type,area,length,points,normals,tangents,trimming_mask",
     help="Input features to use as a string separated by commas.\
             Can include: points, normals, tangents, trimming_mask,\
-            axis_pos, axis_dir, bounding_box, entity_types\
-            area, circumference, param_1, param_2\
-            length, radius, start_point, middle_point, end_point"
-)
-parser.add_argument(
-    "--node_emb_dim",
-    type=int,
-    default=64,
-    help="Restrict training data to graph pairs with under this number of nodes.\
-            Set to 0 to train on all data."
-)
-parser.add_argument(
-    "--train_label_scheme",
-    type=str,
-    default="Joint",
-    help="Labels to use for training as a string separated by commas.\
-            Can include: Joint, Ambiguous, JointEquivalent, AmbiguousEquivalent, Hole, HoleEquivalent\
-            Note: 'Ambiguous' are referred to as 'Sibling' labels in the paper."
-)
-parser.add_argument(
-    "--test_label_scheme",
-    type=str,
-    default="Joint,JointEquivalent",
-    help="Labels to use for testing as a string separated by commas.\
-            Can include: Joint, Ambiguous, JointEquivalent, AmbiguousEquivalent, Hole, HoleEquivalent\
-            Note: 'Ambiguous' are referred to as 'Sibling' labels in the paper."
+            axis_pos, axis_dir, bounding_box, type, parameter\
+            area, circumference\
+            length, start_point, middle_point, end_point"
 )
 parser.add_argument(
     "--pretrained_model", 
@@ -150,7 +136,7 @@ parser.add_argument(
 parser.add_argument(
     "--dropout",
     type=float,
-    default=0.0,
+    default=0.2,
     help="Dropout rate."
 )
 
@@ -186,7 +172,6 @@ if args.wandb:
             entity="fusiqiao101", 
             name=month_day+"_"+hour_min_second
         ),
-        accelerator="dp",
         resume_from_checkpoint=args.checkpoint
     )
 else:
@@ -196,7 +181,6 @@ else:
         logger=TensorBoardLogger(
             str(results_path), name=month_day, version=hour_min_second,
         ),
-        accelerator="dp",
         resume_from_checkpoint=args.checkpoint
     )
 
@@ -236,7 +220,6 @@ if args.traintest == "test" or args.traintest == "traintest":
     if args.traintest == "test":
         assert args.checkpoint is not None, "Expected the --checkpoint argument to be provided"
         checkpoint = args.checkpoint
-        checkpoint_path = '/'.join(checkpoint.split('/')[:-1])
     else:
         checkpoint = checkpoint_path + "/best.ckpt"
     model = JointPrediction.load_from_checkpoint(
@@ -255,7 +238,7 @@ if args.traintest == "test" or args.traintest == "traintest":
         model = model.cuda()
     test_data = JointGraphDataset(root_dir=args.dataset, split=args.test_split)
     test_loader = test_data.get_dataloader(batch_size=1, shuffle=False, num_workers=args.num_workers, drop_last=False)
-    trainer.test(model, test_dataloaders=[test_loader], verbose=False)
+    trainer.test(model, test_dataloaders=[test_loader])
 
     # dump result
     with open(pathlib.Path(checkpoint_path) / "results.csv", mode='w', newline='') as file:

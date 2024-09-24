@@ -24,13 +24,13 @@ class BaseDataset(Dataset):
             sample = self.load_one_graph(fn)
             if sample is None:
                 continue
-            if sample["graph"].edata["x"].size(0) == 0:
+            if sample["graph"].edata["uv"].size(0) == 0:
                 # Catch the case of graphs with no edges
                 continue
             self.data.append(sample)
+        self.convert_to_float32()
         if center_and_scale:
             self.center_and_scale()
-        self.convert_to_float32()
 
     def load_one_graph(self, file_path):
         graph = load_graphs(str(file_path))[0][0]
@@ -38,17 +38,35 @@ class BaseDataset(Dataset):
         return sample
 
     def center_and_scale_graph(self, graph):
-        graph.ndata["x"], center, scale = util.center_and_scale_uvgrid(
-            graph.ndata["x"], return_center_scale=True
+        graph.ndata["uv"], center, scale = util.center_and_scale_uvgrid(
+            graph.ndata["uv"], return_center_scale=True
         )
-        graph.edata["x"][..., :3] -= center
-        graph.edata["x"][..., :3] *= scale
+        graph.edata["uv"][..., :3] -= center
+        graph.edata["uv"][..., :3] *= scale        
+        
+        graph.ndata["parameter"][:, 0] *= scale
+        graph.edata["parameter"][:, 0] *= scale
+        graph.ndata["axis"][:, :3] -= center
+        graph.ndata["axis"][:, :3] *= scale
+        graph.edata["axis"][:, :3] -= center
+        graph.edata["axis"][:, :3] *= scale        
+        graph.ndata["box"][:, :3] -= center
+        graph.ndata["box"][:, :3] *= scale
+        graph.edata["box"][:, :3] -= center
+        graph.edata["box"][:, :3] *= scale        
+        graph.ndata["box"][:, 3:] -= center
+        graph.ndata["box"][:, 3:] *= scale
+        graph.edata["box"][:, 3:] -= center
+        graph.edata["box"][:, 3:] *= scale
+        graph.ndata["area"] *= scale * scale
+        graph.ndata["circumference"] *= scale
+        graph.edata["length"] *= scale
         return graph
 
     def jitter_graph(self, graph):
         noise = random.uniform(-0.2, 0.2)
-        graph.edata["x"][..., :3] += noise
-        graph.edata["x"][..., :3] += noise
+        graph.ndata["uv"][..., :3] += noise
+        graph.edata["uv"][..., :3] += noise
         return graph
 
     def center_and_scale(self):
@@ -57,9 +75,17 @@ class BaseDataset(Dataset):
 
     def convert_to_float32(self):
         for i in range(len(self.data)):
-            self.data[i]["graph"].ndata["x"] = self.data[i]["graph"].ndata["x"].type(FloatTensor)
-            self.data[i]["graph"].edata["x"] = self.data[i]["graph"].edata["x"].type(FloatTensor)
-
+            self.data[i]["graph"].ndata["uv"] = self.data[i]["graph"].ndata["uv"].type(FloatTensor)
+            self.data[i]["graph"].edata["uv"] = self.data[i]["graph"].edata["uv"].type(FloatTensor)
+            self.data[i]["graph"].ndata["parameter"] = self.data[i]["graph"].ndata["parameter"].type(FloatTensor)
+            self.data[i]["graph"].edata["parameter"] = self.data[i]["graph"].edata["parameter"].type(FloatTensor)
+            self.data[i]["graph"].ndata["axis"] = self.data[i]["graph"].ndata["axis"].type(FloatTensor)
+            self.data[i]["graph"].edata["axis"] = self.data[i]["graph"].edata["axis"].type(FloatTensor)
+            self.data[i]["graph"].ndata["box"] = self.data[i]["graph"].ndata["box"].type(FloatTensor)
+            self.data[i]["graph"].edata["box"] = self.data[i]["graph"].edata["box"].type(FloatTensor)
+            self.data[i]["graph"].ndata["area"] = self.data[i]["graph"].ndata["area"].type(FloatTensor)
+            self.data[i]["graph"].ndata["circumference"] = self.data[i]["graph"].ndata["circumference"].type(FloatTensor)
+            self.data[i]["graph"].edata["length"] = self.data[i]["graph"].edata["length"].type(FloatTensor)
     def __len__(self):
         return len(self.data)
 
@@ -67,8 +93,8 @@ class BaseDataset(Dataset):
         sample = self.data[idx]
         if self.random_rotate:
             rotation = util.get_random_rotation()
-            sample["graph"].ndata["x"] = util.rotate_uvgrid(sample["graph"].ndata["x"], rotation)
-            sample["graph"].edata["x"] = util.rotate_uvgrid(sample["graph"].edata["x"], rotation)
+            sample["graph"].ndata["uv"] = util.rotate_uvgrid(sample["graph"].ndata["uv"], rotation)
+            sample["graph"].edata["uv"] = util.rotate_uvgrid(sample["graph"].edata["uv"], rotation)
         return sample
 
     def _collate(self, batch):
@@ -103,18 +129,14 @@ class BaseContrastiveDataset(BaseDataset):
             return self.get_subgraph(graph, num_nodes=1, hops=2, normalize=False)
         elif transformation_type == "drop_nodes":
             graph2 = graph.clone()
-            nodes_to_drop = []
-            for i in range(graph2.number_of_nodes()):
-                if random.random() <= 0.4:
-                    nodes_to_drop.append(i)
+            num_nodes = graph2.number_of_nodes()
+            nodes_to_drop = random.sample(list(range(num_nodes)), int(num_nodes * 0.4))
             graph2.remove_nodes(nodes_to_drop)
             return graph2
         elif transformation_type == "drop_edges":
             graph2 = graph.clone()
-            edges_to_drop = []
-            for i in range(graph2.number_of_edges()):
-                if random.random() <= 0.4:
-                    edges_to_drop.append(i)
+            num_edges = graph2.number_of_edges()
+            edges_to_drop = random.sample(list(range(num_edges)), int(num_edges * 0.4))
             graph2.remove_edges(edges_to_drop)
             return graph2
 
@@ -123,7 +145,7 @@ class BaseContrastiveDataset(BaseDataset):
                     "graph2": dgl.batch([x["graph2"] for x in batch]),
                     # "label": torch.cat([x["label"] for x in batch], dim=0),
                     "filename": [x["filename"] for x in batch]}
-        if collated["graph"].num_nodes() + collated["graph2"].num_nodes() > 16384:
+        if collated["graph"].num_nodes() + collated["graph2"].num_nodes() > 8192:
             print("skip")
             return None
         return collated
@@ -135,8 +157,8 @@ class BaseContrastiveDataset(BaseDataset):
         graph2 = self.apply_transformation(graph.clone())
         if self.random_rotate:
             rotation = util.get_random_rotation()
-            graph2.ndata["x"] = util.rotate_uvgrid(graph2.ndata["x"], rotation)
-            graph2.edata["x"] = util.rotate_uvgrid(graph2.edata["x"], rotation)
+            graph2.ndata["uv"] = util.rotate_uvgrid(graph2.ndata["uv"], rotation)
+            graph2.edata["uv"] = util.rotate_uvgrid(graph2.edata["uv"], rotation)
         if self.split == "train" and random.uniform(0, 1) > self.prob_full_graph:
             graph = self.apply_transformation(graph.clone())
         else:

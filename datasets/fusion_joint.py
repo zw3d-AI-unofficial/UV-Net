@@ -280,6 +280,8 @@ class JointGraphDataset(JointBaseDataset):
         if torch.max(g2.ndata["uv"][:, :, :, :3]) > 2.0 or torch.max(g2.ndata["uv"][:, :, :, :3]) < -2.0:
             return False
         
+        g1.ndata["parameter"][:, 0] *= scale
+        g1.edata["parameter"][:, 0] *= scale
         g1.ndata["axis"][:, :3] -= center1
         g1.ndata["axis"][:, :3] *= scale
         g1.edata["axis"][:, :3] -= center1
@@ -295,7 +297,9 @@ class JointGraphDataset(JointBaseDataset):
         g1.ndata["area"] *= scale * scale
         g1.ndata["circumference"] *= scale
         g1.edata["length"] *= scale
-
+        
+        g2.ndata["parameter"][:, 0] *= scale
+        g2.edata["parameter"][:, 0] *= scale
         g2.ndata["axis"][:, :3] -= center2
         g2.ndata["axis"][:, :3] *= scale
         g2.edata["axis"][:, :3] -= center2

@@ -260,11 +260,11 @@ class GATBlock(nn.Module):
         return x      
     
 
-class GraphEncoder(nn.Module):
+class JoinABLeGraphEncoder(nn.Module):
 
     def __init__(
             self, 
-            input_features=["entity_types","area","length","points","normals","tangents","trimming_mask"],
+            input_features=["type","area","length","points","normals","tangents","trimming_mask"],
             emb_dim=384,
             n_head=8,
             n_layer_gat=2,
@@ -275,7 +275,6 @@ class GraphEncoder(nn.Module):
         super().__init__()
         self.face_encoder = FaceEncoder(input_features, emb_dim, bias, dropout)
         self.edge_encoder = EdgeEncoder(input_features, emb_dim, bias, dropout)
-        # self.graph_encoder = uvnet.encoders.UVNetGraphEncoder(emb_dim, emb_dim, emb_dim, emb_dim)
         self.gat_list = nn.ModuleList([GATBlock(emb_dim, n_head, bias, dropout) for _ in range(n_layer_gat)])
         self.sat_list = nn.ModuleList([SATBlock(emb_dim, n_head, bias, dropout) for _ in range(n_layer_sat)])
         self.drop = nn.Dropout(dropout)
@@ -380,7 +379,7 @@ class CATBlock(nn.Module):
 class JoinABLe(nn.Module):
     def __init__(
             self, 
-            input_features=["entity_types","area","length","points","normals","tangents","trimming_mask"],
+            input_features=["type","area","length","points","normals","tangents","trimming_mask"],
             emb_dim=384,
             n_head=8,
             n_layer_gat=2,
@@ -390,18 +389,18 @@ class JoinABLe(nn.Module):
             dropout=0.0
         ):
         super().__init__()
-        self.graph_encoder = GraphEncoder(input_features, emb_dim, n_head, n_layer_gat, n_layer_sat, bias, dropout)
+        self.graph_encoder = JoinABLeGraphEncoder(input_features, emb_dim, n_head, n_layer_gat, n_layer_sat, bias, dropout)
         self.cat_list = nn.ModuleList([CATBlock(emb_dim, n_head, bias, dropout) for _ in range(n_layer_cat)])
         self.drop = nn.Dropout(dropout)
 
         # Define the classifier
-        self.classifier = nn.ModuleList([
+        self.classifier = nn.Sequential(
             nn.Linear(emb_dim * 2, emb_dim),
             nn.ReLU(),
             nn.Linear(emb_dim, 1),
             nn.Dropout(dropout),
             nn.Sigmoid()
-        ])
+        )
 
     def unpad_and_concat(self, x1, x2, n_nodes1, n_nodes2):
         concat_x = []
@@ -451,6 +450,4 @@ class JoinABLe(nn.Module):
         x = torch.stack(stack_x)
 
         # Pass through the classifier
-        for layer in self.classifier: 
-            x = layer(x)
-        return x.squeeze(1)
+        return self.classifier(x).squeeze(1)

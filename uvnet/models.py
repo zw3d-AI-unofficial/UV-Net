@@ -19,7 +19,7 @@ from torch import nn
 
 import uvnet.encoders
 import metrics
-from uvnet.joinable import JoinABLe
+from uvnet.joinable import JoinABLe, JoinABLeGraphEncoder
 
 
 class _NonLinearClassifier(nn.Module):
@@ -483,6 +483,49 @@ class UVNetContrastiveLearner(nn.Module):
         return projection_out, global_emb, node_emb
 
 
+class JoinABLeContrastiveLearner(nn.Module):
+    def __init__(
+            self, 
+            input_features=["type","area","length","points","normals","tangents","trimming_mask"],
+            emb_dim=512,
+            out_dim=256,
+            n_head=8,
+            n_layer_gat=2,
+            n_layer_sat=2,
+            bias=False,
+            dropout=0.0
+    ):
+        """
+        JoinABLeContrastiveLearner
+        """
+        super().__init__()
+        self.graph_encoder = JoinABLeGraphEncoder(input_features, emb_dim, n_head, n_layer_gat, n_layer_sat, bias, dropout)
+        
+        self.projection_layer = nn.Sequential(
+            nn.Linear(emb_dim, emb_dim, bias=False),
+            nn.BatchNorm1d(emb_dim),
+            nn.Dropout(dropout),
+            nn.ReLU(),
+            nn.Linear(emb_dim, emb_dim, bias=False),
+            nn.BatchNorm1d(emb_dim),
+            nn.ReLU(),
+            nn.Linear(emb_dim, out_dim, bias=False),
+        )
+
+    def forward(self, bg):
+        node_counts = bg.batch_num_nodes()
+        node_emb = self.graph_encoder(bg)
+        stack_x = []
+        for i in range(len(node_counts)):
+            x_i = node_emb[i, :node_counts[i], :]
+            x_pooled = torch.mean(x_i, dim=0)
+            stack_x.append(x_pooled)
+        graph_emb = torch.stack(stack_x)
+        projection_out = self.projection_layer(graph_emb)
+        projection_out = F.normalize(projection_out, p=2, dim=-1)
+        return projection_out, graph_emb, node_emb
+
+
 class Contrastive(pl.LightningModule):
     """
     PyTorch Lightning module to train/test the contrastive learning model.
@@ -490,39 +533,53 @@ class Contrastive(pl.LightningModule):
 
     def __init__(
             self, 
-            latent_dim=128, 
-            crv_emb_dim=64,
-            srf_emb_dim=64,
-            graph_emb_dim=128,
-            out_dim=128, 
+            input_features=["type","area","length","points","normals","tangents","trimming_mask"],
+            emb_dim=512,
+            out_dim=256,
+            n_head=8,
+            n_layer_gat=2,
+            n_layer_sat=2,
+            bias=False,
+            dropout=0.0,
+            lr=1e-4,
             temperature=0.1, 
-            batch_size=256, 
-            channels="points,trimming_mask"
+            batch_size=8
         ):
         super().__init__()
         self.save_hyperparameters()
+        self.lr = lr
         self.loss_fn = NTXentLoss(temperature=temperature, batch_size=batch_size)
-        self.model = UVNetContrastiveLearner(
-            latent_dim=latent_dim, 
-            crv_emb_dim=crv_emb_dim,
-            srf_emb_dim=srf_emb_dim,
-            graph_emb_dim=graph_emb_dim,
-            out_dim=out_dim, 
-            channels=channels.split(',')
+        # self.model = UVNetContrastiveLearner(
+        #     latent_dim=latent_dim, 
+        #     crv_emb_dim=crv_emb_dim,
+        #     srf_emb_dim=srf_emb_dim,
+        #     graph_emb_dim=graph_emb_dim,
+        #     out_dim=out_dim, 
+        #     channels=channels.split(',')
+        # )
+        self.model = JoinABLeContrastiveLearner(
+            input_features,
+            emb_dim,
+            out_dim,
+            n_head,
+            n_layer_gat,
+            n_layer_sat,
+            bias,
+            dropout
         )
 
-    def _permute_graph_data_channels(self, graph):
-        graph.ndata["x"] = graph.ndata["x"].permute(0, 3, 1, 2)
-        graph.edata["x"] = graph.edata["x"].permute(0, 2, 1)
-        return graph
+    # def _permute_graph_data_channels(self, graph):
+    #     graph.ndata["uv"] = graph.ndata["uv"].permute(0, 3, 1, 2)
+    #     graph.edata["uv"] = graph.edata["uv"].permute(0, 2, 1)
+    #     return graph
 
     def step(self, batch, batch_idx): 
         device = next(self.model.buffers()).device
         graph1, graph2 = batch["graph"].to(device), batch["graph2"].to(device)
-        graph1 = self._permute_graph_data_channels(graph1)
-        graph2 = self._permute_graph_data_channels(graph2)
-        proj1, _ = self.model(graph1)
-        proj2, _ = self.model(graph2)
+        # graph1 = self._permute_graph_data_channels(graph1)
+        # graph2 = self._permute_graph_data_channels(graph2)
+        proj1, _, _ = self.model(graph1)
+        proj2, _, _ = self.model(graph2)
         return self.loss_fn(proj1, proj2)
 
     def training_step(self, batch, batch_idx):
@@ -536,14 +593,19 @@ class Contrastive(pl.LightningModule):
         if batch is None:
             return None
         loss = self.step(batch, batch_idx)
-        if loss > 5:
-            print("valid loss:", loss, ", file:", batch["filename"])
         self.log("val_loss", loss, on_step=False, on_epoch=True, sync_dist=True)
         return loss
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), weight_decay=1e-4)
-        return optimizer
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min")
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "monitor": "val_loss",
+            },
+        }
 
     @torch.no_grad()
     def clustering(self, data, num_clusters=26, n_init=100, standardize=False):
@@ -606,15 +668,15 @@ class Contrastive(pl.LightningModule):
 class JointPrediction(pl.LightningModule):
     def __init__(
             self, 
-            input_features=["entity_types","area","length","points","normals","tangents","trimming_mask"],
-            emb_dim=384,
+            input_features=["type","area","length","points","normals","tangents","trimming_mask"],
+            emb_dim=512,
             n_head=8,
             n_layer_gat=2,
             n_layer_sat=2,
             n_layer_cat=2,
             bias=False,
             dropout=0.0,
-            lr=1e-3
+            lr=1e-4
         ):
         super().__init__()
         # if pretrained_model is None:
@@ -671,19 +733,11 @@ class JointPrediction(pl.LightningModule):
         if k is None:
             k = metrics.get_k_sequence()
         return metrics.hit_at_top_k(logits, labels, k=k)
-    
-    def _permute_graph_data_channels(self, graph):
-        graph.ndata["x"] = graph.ndata["x"].permute(0, 3, 1, 2)
-        if graph.edata["x"].numel() != 0:
-            graph.edata["x"] = graph.edata["x"].permute(0, 2, 1)
-        return graph
    
     def step(self, batch):
         g1, g2, joint_judge, _ = batch
         device = next(self.model.parameters()).device
         g1, g2 = g1.to(device), g2.to(device)
-        # g1 = self._permute_graph_data_channels(g1)
-        # g2 = self._permute_graph_data_channels(g2)
         # _, global_emb1, _ = self.pre_trained_model(g1)
         # _, global_emb2, _ = self.pre_trained_model(g2)
         # x = self.projection_layer(global_emb1 + global_emb2).squeeze(-1)
