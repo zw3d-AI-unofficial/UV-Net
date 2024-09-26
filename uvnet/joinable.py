@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import uvnet.encoders
 from datasets.fusion_joint import JointGraphDataset
-from dgl.nn import GATv2Conv
+from uvnet.gatv2conv_custom import GATv2Conv
 
 
 def cnn2d(inp_channels, hidden_channels, out_dim, num_layers=1):
@@ -111,6 +111,7 @@ class FaceEncoder(nn.Module):
         if len(self.grid_features) > 0:
             grid_feat = bg.ndata['uv'][:, :, :, self.grid_features].permute(0, 3, 1, 2)
             x = self.grid_embd(grid_feat)
+            # x = torch.randn(grid_feat.shape[0], 64)
         if self.geom_feature_size > 0:
             geom_feat = []
             for feat in self.geom_features:
@@ -122,9 +123,12 @@ class FaceEncoder(nn.Module):
                         feat = feat.unsqueeze(1)
                 geom_feat.append(feat)
             if x is None:
-                x = self.geom_embd(torch.cat(geom_feat, dim=1).double())
+                x = self.geom_embd(torch.cat(geom_feat, dim=1).float())
             else:
-                x += self.geom_embd(torch.cat(geom_feat, dim=1).double())
+                y = torch.cat((geom_feat[0], geom_feat[1]), dim=1).float()
+                z = self.geom_embd(y)
+                # x = torch.cat((x, z), dim=1)
+                x = x + z
         x = x + self.mlp(self.ln(x))
         return x
 
@@ -170,10 +174,10 @@ class EdgeEncoder(nn.Module):
                 m.bias.data.fill_(0.0)
 
     def forward(self, bg):
-        x = torch.zeros(bg.num_edges(), self.emb_dim, dtype=torch.double, device=bg.edata['uv'].device)
+        x = None
         if len(self.grid_features) > 0:
             grid_feat = bg.edata['uv'][:, :, self.grid_features].permute(0, 2, 1)
-            x += self.grid_embd(grid_feat)
+            x = self.grid_embd(grid_feat)
         if self.geom_feature_size > 0:
             geom_feat = []
             for feat in self.geom_features:
@@ -184,7 +188,13 @@ class EdgeEncoder(nn.Module):
                     if len(feat.shape) == 1:
                         feat = feat.unsqueeze(1)
                 geom_feat.append(feat)
-            x += self.geom_embd(torch.cat(geom_feat, dim=1).double())
+            if x is None:
+                x = self.geom_embd(torch.cat(geom_feat, dim=1).float())
+            else:
+                y = torch.cat((geom_feat[0], geom_feat[1]), dim=1).float()
+                z = self.geom_embd(y)
+                # x = torch.cat((x, z), dim=1)
+                x = x + z
         x = x + self.mlp(self.ln(x))
         return x
 
@@ -241,27 +251,12 @@ class SATBlock(nn.Module):
         return x
 
 
-class CustomGATv2Conv(GATv2Conv):
-
-    def __init__(self, in_feats, out_feats, n_head, dropout=0.0):
-        super(CustomGATv2Conv, self).__init__(in_feats, out_feats, n_head, feat_drop=dropout, attn_drop=dropout,
-                                              allow_zero_in_degree=True)
-
-    def edge_attention(self, edges):
-        edge_weights = edges.data['edge_attr']
-        return {'e': self.leaky_relu((edges.src['z'] * edges.dst['z'] + edge_weights).sum(dim=-1))}
-
-    def forward(self, graph, node_features, edge_attr):
-        graph.edata['edge_attr'] = edge_attr
-        return super(CustomGATv2Conv, self).forward(graph, node_features)
-
-
 class GATBlock(nn.Module):
 
     def __init__(self, emb_dim, n_head=8, bias=False, dropout=0.0):
         super().__init__()
         self.ln_1 = LayerNorm(emb_dim, bias)
-        self.attn = CustomGATv2Conv(emb_dim, emb_dim // n_head, n_head, dropout)
+        self.attn = GATv2Conv(emb_dim, emb_dim // n_head, n_head, dropout, allow_zero_in_degree=True)
         self.ln_2 = LayerNorm(emb_dim, bias)
         self.mlp = MLP(emb_dim, emb_dim, bias, dropout)
         self.emb_dim = emb_dim
@@ -287,8 +282,8 @@ class GraphEncoder(nn.Module):
         super().__init__()
         self.face_encoder = FaceEncoder(input_features, emb_dim, bias, dropout)
         self.edge_encoder = EdgeEncoder(input_features, emb_dim, bias, dropout)
-        # self.graph_encoder = uvnet.encoders.UVNetGraphEncoder(emb_dim, emb_dim, emb_dim, emb_dim)
-        self.gat_list = nn.ModuleList([GATBlock(emb_dim, n_head, bias, dropout) for _ in range(n_layer_gat)])
+        self.graph_encoder = uvnet.encoders.UVNetGraphEncoder(emb_dim, emb_dim, emb_dim, emb_dim, num_layers=1)
+        # self.gat_list = nn.ModuleList([GATBlock(emb_dim, n_head, bias, dropout) for _ in range(n_layer_gat)])
         self.sat_list = nn.ModuleList([SATBlock(emb_dim, n_head, bias, dropout) for _ in range(n_layer_sat)])
         self.drop = nn.Dropout(dropout)
 
@@ -296,8 +291,9 @@ class GraphEncoder(nn.Module):
         face_emb = self.drop(self.face_encoder(bg))
         edge_emb = self.drop(self.edge_encoder(bg))
         # return face_emb
-        for block in self.gat_list:
-            face_emb = block(bg, face_emb, edge_emb)
+        # for block in self.gat_list:
+        #     face_emb = block(bg, face_emb, edge_emb)
+        face_emb, _ = self.graph_encoder(bg, face_emb, edge_emb)
         # Prepare data for attention layers
         # node_counts = bg.batch_num_nodes().tolist()
         if self.training:
@@ -325,7 +321,7 @@ class GraphEncoder(nn.Module):
 
     def get_attn_mask(self, x, node_counts):
         B, T, _ = x.shape
-        attn_mask = torch.ones((B, 1, T, T), dtype=torch.double, device=x.device)
+        attn_mask = torch.ones((B, 1, T, T), dtype=torch.float32, device=x.device)
         for i in range(B):
             attn_mask[i, 0, :node_counts[i], :node_counts[i]] = 0
         A_SMALL_NUMBER = -1e9
@@ -416,22 +412,23 @@ class JoinABLe(nn.Module):
         # Define the classifier
         self.classifier = nn.ModuleList([
             nn.Linear(emb_dim * 2, emb_dim),
+            # nn.Linear(emb_dim * 4, emb_dim),
             nn.ReLU(),
             nn.Linear(emb_dim, 1),
             nn.Dropout(dropout),
             nn.Sigmoid()
         ])
-        self.apply(self._init_weights)
-
-    def _init_weights(self, module):
-        if isinstance(module, nn.Linear):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
-            if module.bias is not None:
-                torch.nn.init.zeros_(module.bias)
-        elif isinstance(module, nn.Embedding):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
-        elif isinstance(module, nn.Conv1d) or isinstance(module, nn.Conv2d):
-            torch.nn.init.kaiming_uniform_(module.weight, nonlinearity='relu')
+    #     self.apply(self._init_weights)
+    #
+    # def _init_weights(self, module):
+    #     if isinstance(module, nn.Linear):
+    #         torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+    #         if module.bias is not None:
+    #             torch.nn.init.zeros_(module.bias)
+    #     elif isinstance(module, nn.Embedding):
+    #         torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+    #     elif isinstance(module, nn.Conv1d) or isinstance(module, nn.Conv2d):
+    #         torch.nn.init.kaiming_uniform_(module.weight, nonlinearity='relu')
 
     def unpad_and_concat(self, x1, x2, n_nodes1, n_nodes2):
         concat_x = []
@@ -466,6 +463,11 @@ class JoinABLe(nn.Module):
         bg1 = dgl.graph((edge_index_1[0], edge_index_1[1]), num_nodes=bg1_node_uv.shape[0])
         bg2 = dgl.graph((edge_index_2[0], edge_index_2[1]), num_nodes=bg2_node_uv.shape[0])
 
+        # bg1 = dgl.remove_self_loop(bg1)
+        # bg2 = dgl.remove_self_loop(bg2)
+        # bg1 = dgl.add_self_loop(bg1)
+        # bg2 = dgl.add_self_loop(bg2)
+
         bg1 = self.init_dgl(bg1, bg1_node_uv, bg1_node_type, bg1_node_area,
                             bg1_edge_uv, bg1_edge_type, bg1_edge_length)
         bg2 = self.init_dgl(bg2, bg2_node_uv, bg2_node_type, bg2_node_area,
@@ -476,9 +478,9 @@ class JoinABLe(nn.Module):
         x1 = self.graph_encoder(bg1, node_counts1)
         x2 = self.graph_encoder(bg2, node_counts2)
 
-        # attn_mask = self.get_attn_mask(x1, x2, node_counts1, node_counts2)
-        # for block in self.cat_list:
-        #     x1, x2 = block(x1, x2, attn_mask)
+        attn_mask = self.get_attn_mask(x1, x2, node_counts1, node_counts2)
+        for block in self.cat_list:
+            x1, x2 = block(x1, x2, attn_mask)
         joint_judge_prediction = self.predict(x1, x2, node_counts1,
                                               node_counts2)  # float torch.Size([batch_size]) 二分类预测
         return joint_judge_prediction
@@ -486,7 +488,7 @@ class JoinABLe(nn.Module):
     def get_attn_mask(self, x1, x2, n_nodes1, n_nodes2):
         B, T1, _ = x1.shape
         B, T2, _ = x2.shape
-        attn_mask = torch.ones((B, 1, T1, T2), dtype=torch.double, device=x1.device)
+        attn_mask = torch.ones((B, 1, T1, T2), dtype=torch.float32, device=x1.device)
         for i in range(B):
             attn_mask[i, 0, :n_nodes1[i], :n_nodes2[i]] = 0
         A_SMALL_NUMBER = -1e9
@@ -506,10 +508,13 @@ class JoinABLe(nn.Module):
                 stack_x.append(torch.cat((x1_pooled, x2_pooled)))
             x = torch.stack(stack_x)
         else:
-            x = torch.cat((torch.mean(x1, dim=1), torch.mean(x2, dim=1)), dim=1)
+            x1 = torch.mean(x1, dim=1)
+            x2 = torch.mean(x2, dim=1)
+            x = torch.cat((x1, x2), dim=1)
 
         # Pass through the classifier
         print(x.shape)
+        # x = torch.randn(1, 128)
         for layer in self.classifier:
             x = layer(x)
         return x.squeeze(1)
