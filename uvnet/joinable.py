@@ -4,8 +4,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 import uvnet.encoders
 from datasets.fusion_joint import JointGraphDataset
-from uvnet.gatv2conv_custom import GATv2Conv
-
+# from uvnet.gatv2conv_custom import GATv2Conv
+from torch_geometric.nn import GATv2Conv
+from torch_geometric.data import Data, Batch
 
 def cnn2d(inp_channels, hidden_channels, out_dim, num_layers=1):
     assert num_layers >= 1
@@ -109,16 +110,16 @@ class FaceEncoder(nn.Module):
     def forward(self, bg):
         x = None
         if len(self.grid_features) > 0:
-            grid_feat = bg.ndata['uv'][:, :, :, self.grid_features].permute(0, 3, 1, 2)
+            grid_feat = bg.x[:, :, :, self.grid_features].permute(0, 3, 1, 2)
             x = self.grid_embd(grid_feat)
             # x = torch.randn(grid_feat.shape[0], 64)
         if self.geom_feature_size > 0:
             geom_feat = []
             for feat in self.geom_features:
                 if feat == "type":
-                    feat = F.one_hot(bg.ndata[feat], num_classes=JointGraphDataset.SURFACE_GEOM_FEAT_MAP["type"])
+                    feat = F.one_hot(bg["node_" + feat], num_classes=JointGraphDataset.SURFACE_GEOM_FEAT_MAP["type"])
                 else:
-                    feat = bg.ndata[feat]
+                    feat = bg["node_" + feat]
                     if len(feat.shape) == 1:
                         feat = feat.unsqueeze(1)
                 geom_feat.append(feat)
@@ -176,15 +177,15 @@ class EdgeEncoder(nn.Module):
     def forward(self, bg):
         x = None
         if len(self.grid_features) > 0:
-            grid_feat = bg.edata['uv'][:, :, self.grid_features].permute(0, 2, 1)
+            grid_feat = bg['edge_uv'][:, :, self.grid_features].permute(0, 2, 1)
             x = self.grid_embd(grid_feat)
         if self.geom_feature_size > 0:
             geom_feat = []
             for feat in self.geom_features:
                 if feat == "type":
-                    feat = F.one_hot(bg.edata[feat], num_classes=JointGraphDataset.CURVE_GEOM_FEAT_MAP["type"])
+                    feat = F.one_hot(bg["edge_" + feat], num_classes=JointGraphDataset.CURVE_GEOM_FEAT_MAP["type"])
                 else:
-                    feat = bg.edata[feat]
+                    feat = bg["edge_" + feat]
                     if len(feat.shape) == 1:
                         feat = feat.unsqueeze(1)
                 geom_feat.append(feat)
@@ -256,13 +257,13 @@ class GATBlock(nn.Module):
     def __init__(self, emb_dim, n_head=8, bias=False, dropout=0.0):
         super().__init__()
         self.ln_1 = LayerNorm(emb_dim, bias)
-        self.attn = GATv2Conv(emb_dim, emb_dim // n_head, n_head, dropout, allow_zero_in_degree=True)
+        self.attn = GATv2Conv(emb_dim, emb_dim // n_head, heads=n_head, dropout=dropout, add_self_loops=False, edge_dim=emb_dim)
         self.ln_2 = LayerNorm(emb_dim, bias)
         self.mlp = MLP(emb_dim, emb_dim, bias, dropout)
         self.emb_dim = emb_dim
 
     def forward(self, graph, x, edge_attr):
-        x = x + self.attn(graph, self.ln_1(x), edge_attr).reshape(-1, self.emb_dim)
+        x = x + self.attn(self.ln_1(x), graph.edge_index, edge_attr)
         x = x + self.mlp(self.ln_2(x))
         return x
 
@@ -282,8 +283,8 @@ class GraphEncoder(nn.Module):
         super().__init__()
         self.face_encoder = FaceEncoder(input_features, emb_dim, bias, dropout)
         self.edge_encoder = EdgeEncoder(input_features, emb_dim, bias, dropout)
-        self.graph_encoder = uvnet.encoders.UVNetGraphEncoder(emb_dim, emb_dim, emb_dim, emb_dim, num_layers=1)
-        # self.gat_list = nn.ModuleList([GATBlock(emb_dim, n_head, bias, dropout) for _ in range(n_layer_gat)])
+        # self.graph_encoder = uvnet.encoders.UVNetGraphEncoder(emb_dim, emb_dim, emb_dim, emb_dim, num_layers=1)
+        self.gat_list = nn.ModuleList([GATBlock(emb_dim, n_head, bias, dropout) for _ in range(n_layer_gat)])
         self.sat_list = nn.ModuleList([SATBlock(emb_dim, n_head, bias, dropout) for _ in range(n_layer_sat)])
         self.drop = nn.Dropout(dropout)
 
@@ -291,9 +292,9 @@ class GraphEncoder(nn.Module):
         face_emb = self.drop(self.face_encoder(bg))
         edge_emb = self.drop(self.edge_encoder(bg))
         # return face_emb
-        # for block in self.gat_list:
-        #     face_emb = block(bg, face_emb, edge_emb)
-        face_emb, _ = self.graph_encoder(bg, face_emb, edge_emb)
+        for block in self.gat_list:
+            face_emb = block(bg, face_emb, edge_emb)
+        # face_emb, _ = self.graph_encoder(bg, face_emb, edge_emb)
         # Prepare data for attention layers
         # node_counts = bg.batch_num_nodes().tolist()
         if self.training:
@@ -412,7 +413,7 @@ class JoinABLe(nn.Module):
         # Define the classifier
         self.classifier = nn.ModuleList([
             nn.Linear(emb_dim * 2, emb_dim),
-            # nn.Linear(emb_dim * 4, emb_dim),
+            # nn.Linear(emb_dim, emb_dim),
             nn.ReLU(),
             nn.Linear(emb_dim, 1),
             nn.Dropout(dropout),
@@ -445,13 +446,13 @@ class JoinABLe(nn.Module):
         return x
 
     def init_dgl(self, bg, node_uv, node_type, node_area, edge_uv, edge_type, edge_length):
-        bg.ndata["uv"] = node_uv
-        bg.ndata["type"] = node_type
-        bg.ndata["area"] = node_area
+        # bg.node_uv = node_uv
+        bg.node_type = node_type
+        bg.node_area = node_area
 
-        bg.edata["uv"] = edge_uv
-        bg.edata["type"] = edge_type
-        bg.edata["length"] = edge_length
+        bg.edge_uv = edge_uv
+        bg.edge_type = edge_type
+        bg.edge_length = edge_length
         return bg
 
     def forward(self, nodes_num, edge_index_1, edge_index_2,
@@ -460,23 +461,18 @@ class JoinABLe(nn.Module):
                 bg2_node_uv, bg2_node_type, bg2_node_area,
                 bg2_edge_uv, bg2_edge_type, bg2_edge_length):
 
-        bg1 = dgl.graph((edge_index_1[0], edge_index_1[1]), num_nodes=bg1_node_uv.shape[0])
-        bg2 = dgl.graph((edge_index_2[0], edge_index_2[1]), num_nodes=bg2_node_uv.shape[0])
+        g1 = Data(bg1_node_uv, edge_index_1)
+        g2 = Data(bg2_node_uv, edge_index_2)
 
-        # bg1 = dgl.remove_self_loop(bg1)
-        # bg2 = dgl.remove_self_loop(bg2)
-        # bg1 = dgl.add_self_loop(bg1)
-        # bg2 = dgl.add_self_loop(bg2)
-
-        bg1 = self.init_dgl(bg1, bg1_node_uv, bg1_node_type, bg1_node_area,
+        g1 = self.init_dgl(g1, bg1_node_uv, bg1_node_type, bg1_node_area,
                             bg1_edge_uv, bg1_edge_type, bg1_edge_length)
-        bg2 = self.init_dgl(bg2, bg2_node_uv, bg2_node_type, bg2_node_area,
+        g2 = self.init_dgl(g2, bg2_node_uv, bg2_node_type, bg2_node_area,
                             bg2_edge_uv, bg2_edge_type, bg2_edge_length)
 
         node_counts1 = nodes_num[0]
         node_counts2 = nodes_num[1]
-        x1 = self.graph_encoder(bg1, node_counts1)
-        x2 = self.graph_encoder(bg2, node_counts2)
+        x1 = self.graph_encoder(g1, node_counts1)
+        x2 = self.graph_encoder(g2, node_counts2)
 
         attn_mask = self.get_attn_mask(x1, x2, node_counts1, node_counts2)
         for block in self.cat_list:
@@ -511,6 +507,7 @@ class JoinABLe(nn.Module):
             x1 = torch.mean(x1, dim=1)
             x2 = torch.mean(x2, dim=1)
             x = torch.cat((x1, x2), dim=1)
+            # x = x1
 
         # Pass through the classifier
         print(x.shape)

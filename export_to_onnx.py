@@ -7,7 +7,7 @@ from uvnet.joinable import JoinABLe
 import onnx
 
 def export_to_onnx(args, model):
-    num_nodes1, num_edges1, num_nodes2, num_edges2 = 5, 5, 10, 10
+    num_nodes1, num_edges1, num_nodes2, num_edges2 = 5, 6, 10, 12
     dummy_g1_node = torch.randn(num_nodes1, JointGraphDataset.grid_size, JointGraphDataset.grid_size, JointGraphDataset.grid_channels)
     dummy_g1_edge = torch.randn(num_edges1, JointGraphDataset.grid_size, JointGraphDataset.grid_channels - 1)
     # dummy_g1_ent = torch.randn(num_nodes1, JointGraphDataset.ent_feature_size)
@@ -120,7 +120,7 @@ if __name__ == "__main__":
     model = JoinABLe(
         input_features=["type","area","length","points","normals","tangents","trimming_mask"],
         emb_dim=64,
-        n_head=8,
+        n_head=2,
         n_layer_gat=1,
         n_layer_sat=0,
         n_layer_cat=0,
