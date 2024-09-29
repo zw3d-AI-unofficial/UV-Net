@@ -179,9 +179,9 @@ class SelfAttention(nn.Module):
         super().__init__()
         assert emb_dim % n_head == 0
         # key, query, value projections for all heads, but in a batch
-        self.c_attn = nn.Linear(emb_dim, 3 * emb_dim, bias=bias) # 将输入的嵌入维度 emb_dim 映射到三倍的嵌入维度。这三个嵌入分别用于查询（query）、键（key）和值（value）
+        self.c_attn = nn.Linear(emb_dim, 3 * emb_dim, bias=bias)
         # output projection
-        self.c_proj = nn.Linear(emb_dim, emb_dim, bias=bias) #将多头注意力的输出映射回原始的嵌入维度
+        self.c_proj = nn.Linear(emb_dim, emb_dim, bias=bias)
         # regularization
         self.attn_dropout = nn.Dropout(dropout)
         self.resid_dropout = nn.Dropout(dropout)
@@ -190,7 +190,7 @@ class SelfAttention(nn.Module):
         self.dropout = dropout
 
     def forward(self, x, attn_mask):
-        B, T, C = x.size() # batch size批次大小, sequence length序列长度, embedding dimensionality (n_embd)嵌入维度  torch.Size([1, 36, 384])
+        B, T, C = x.size() # batch size, sequence length, embedding dimensionality
 
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
         q, k, v  = self.c_attn(x).split(self.n_embd, dim=2)
@@ -200,10 +200,10 @@ class SelfAttention(nn.Module):
 
         # self-attention: 
         y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, dropout_p=self.dropout if self.training else 0)
-        y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side 多头注意力的结果重新组装起来，使其恢复到原始的形状，即每个头部的输出被拼接到一起形成一个完整的输出
+        y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
 
         # output projection
-        y = self.resid_dropout(self.c_proj(y))           #对多头注意力的输出进行线性变换，并应用残留丢弃层
+        y = self.resid_dropout(self.c_proj(y))
         return y
 
 
@@ -220,7 +220,7 @@ class SATBlock(nn.Module):
         x = x + self.attn(self.ln_1(x), attn_mask)
         x = x + self.mlp(self.ln_2(x))
         return x
-
+    
 
 class CustomGATv2Conv(GATv2Conv):
 
@@ -234,7 +234,7 @@ class CustomGATv2Conv(GATv2Conv):
     def forward(self, graph, node_features, edge_attr):
         graph.edata['edge_attr'] = edge_attr
         return super(CustomGATv2Conv, self).forward(graph, node_features)
-    
+
 
 class GATBlock(nn.Module):
     
@@ -403,7 +403,7 @@ class JointTypeHead(nn.Module):
             self.projection_layer.append(nn.BatchNorm1d(input_dim))
             self.projection_layer.append(nn.Dropout(dropout))
             self.projection_layer.append(nn.ReLU())
-        self.output_layer = nn.Linear(input_dim, 1, bias)
+        self.output_layer = nn.Linear(input_dim, len(JointGraphDataset.JOINT_TYPE_MAP), bias)
 
     def forward(self, x, jg):
         ids = torch.where(jg.edata["label_matrix"] == 1)[0].long()

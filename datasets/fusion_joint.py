@@ -136,6 +136,16 @@ class JointGraphDataset(JointBaseDataset):
         "length": 1
     }
 
+    JOINT_TYPE_MAP = {
+        "RigidJointType": 0,
+        "RevoluteJointType": 1,
+        "SliderJointType": 2,
+        "CylindricalJointType": 3,
+        "PinSlotJointType": 4,
+        "PlanarJointType": 5,
+        "BallJointType": 6
+    }
+
     def __init__(
         self,
         root_dir,
@@ -336,14 +346,20 @@ class JointGraphDataset(JointBaseDataset):
         if torch.max(g2.ndata["uv"][:, :, :, :3]) > 2.0 or torch.max(g2.ndata["uv"][:, :, :, :3]) < -2.0:
             return False
         
+        g1.ndata["parameter"] = g1.ndata["parameter"].double()
         g1.ndata["parameter"][:, 0] *= scale
+        g1.edata["parameter"] = g1.edata["parameter"].double()
         g1.edata["parameter"][:, 0] *= scale
+        g1.ndata["axis"] = g1.ndata["axis"].double()
         g1.ndata["axis"][:, :3] -= center1
         g1.ndata["axis"][:, :3] *= scale
+        g1.edata["axis"] = g1.edata["axis"].double()
         g1.edata["axis"][:, :3] -= center1
-        g1.edata["axis"][:, :3] *= scale        
+        g1.edata["axis"][:, :3] *= scale
+        g1.ndata["box"] = g1.ndata["box"].double()        
         g1.ndata["box"][:, :3] -= center1
         g1.ndata["box"][:, :3] *= scale
+        g1.edata["box"] = g1.edata["box"].double()   
         g1.edata["box"][:, :3] -= center1
         g1.edata["box"][:, :3] *= scale        
         g1.ndata["box"][:, 3:] -= center1
@@ -351,17 +367,24 @@ class JointGraphDataset(JointBaseDataset):
         g1.edata["box"][:, 3:] -= center1
         g1.edata["box"][:, 3:] *= scale
         g1.ndata["area"] *= scale * scale
+        g1.ndata["circumference"] = g1.ndata["circumference"].double()
         g1.ndata["circumference"] *= scale
         g1.edata["length"] *= scale
 
+        g2.ndata["parameter"] = g2.ndata["parameter"].double()
         g2.ndata["parameter"][:, 0] *= scale
+        g2.edata["parameter"] = g2.edata["parameter"].double()
         g2.edata["parameter"][:, 0] *= scale
+        g2.ndata["axis"] = g2.ndata["axis"].double()
         g2.ndata["axis"][:, :3] -= center2
         g2.ndata["axis"][:, :3] *= scale
+        g2.edata["axis"] = g2.edata["axis"].double()
         g2.edata["axis"][:, :3] -= center2
-        g2.edata["axis"][:, :3] *= scale        
+        g2.edata["axis"][:, :3] *= scale  
+        g2.ndata["box"] = g2.ndata["box"].double()            
         g2.ndata["box"][:, :3] -= center2
         g2.ndata["box"][:, :3] *= scale
+        g2.edata["box"] = g2.edata["box"].double()   
         g2.edata["box"][:, :3] -= center2
         g2.edata["box"][:, :3] *= scale        
         g2.ndata["box"][:, 3:] -= center2
@@ -369,6 +392,7 @@ class JointGraphDataset(JointBaseDataset):
         g2.edata["box"][:, 3:] -= center2
         g2.edata["box"][:, 3:] *= scale
         g2.ndata["area"] *= scale * scale
+        g2.ndata["circumference"] = g2.ndata["circumference"].double()
         g2.ndata["circumference"] *= scale
         g2.edata["length"] *= scale
         return True
@@ -451,10 +475,13 @@ class JointGraphDataset(JointBaseDataset):
             entity2 = joint["geometry_or_origin_two"]["entity_one"]
             entity2_index = entity2["index"]
             entity2_type = entity2["type"]
-            if joint["joint_type"] == "Coincident":
-                joint_type = 0
+            if "joint_motion" in joint:
+                joint_type = JointGraphDataset.JOINT_TYPE_MAP[joint["joint_motion"]["joint_type"]]
             else:
-                joint_type = 1
+                if joint["joint_type"] == "Coincident":
+                    joint_type = 0
+                else:
+                    joint_type = 1
             # Offset the joint indices for use in the label matrix
             entity1_index = self.offset_joint_index(
                 entity1_index, entity1_type, face_count1, entity_count1)

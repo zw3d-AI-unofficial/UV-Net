@@ -829,11 +829,11 @@ class JointPrediction(pl.LightningModule):
             end = start + size_i
             pair_logits_i = pair_logits[start:end]
             pair_labels_i = joint_graph_unbatched[i].edata["label_matrix"]
-            # # Classification loss
-            # if self.loss_fn == "bce":
-            #     loss_clf += self.bce_loss(pair_logits_i, pair_labels_i)
-            # elif self.loss_fn == "mle":
-            #     loss_clf += self.mle_loss(pair_logits_i, pair_labels_i)
+            # Classification loss
+            if self.loss_fn == "bce":
+                loss_clf += self.bce_loss(pair_logits_i, pair_labels_i)
+            elif self.loss_fn == "mle":
+                loss_clf += self.mle_loss(pair_logits_i, pair_labels_i)
             # Symmetric loss
             loss_sym += self.symmetric_loss(pair_logits_i, pair_labels_i, num_nodes1[i], num_nodes2[i])
             # Type loss

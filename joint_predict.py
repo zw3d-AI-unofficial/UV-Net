@@ -29,13 +29,13 @@ parser.add_argument(
 parser.add_argument(
     "--batch_size", 
     type=int, 
-    default=8, 
+    default=32, 
     help="Batch size"
 )
 parser.add_argument(
     "--num_workers",
     type=int,
-    default=8,
+    default=32,
     help="Number of workers for the dataloader. NOTE: set this to 0 on Windows, any other value leads to poor performance",
 )
 parser.add_argument(
@@ -165,7 +165,7 @@ parser.add_argument(
 parser.add_argument(
     "--loss_fn",
     type=str,
-    choices=("bce", "mle"),
+    choices=("bce", "mle", "none"),
     default="mle",
     help="Loss to use."
 )
@@ -193,12 +193,12 @@ checkpoint_callback = ModelCheckpoint(
 
 if args.wandb:
     if args.checkpoint is not None and args.wandb_run != "":
-        wandb.init(project="joinable-pretrained", id=args.wandb_run, resume="allow")
+        wandb.init(project="joinable-fusion", id=args.wandb_run, resume="allow")
     trainer = Trainer.from_argparse_args(
         args,
         callbacks=[checkpoint_callback],
         logger=WandbLogger(
-            project="joinable-pretrained", 
+            project="joinable-fusion", 
             entity="fusiqiao101", 
             name=month_day+"_"+hour_min_second
         ),
