@@ -29,7 +29,7 @@ class _NonLinearClassifier(nn.Module):
         A 3-layer MLP with linear outputs
 
         Args:
-            input_dim (int): Dimension of the input tensor 
+            input_dim (int): Dimension of the input tensor
             num_classes (int): Dimension of the output logits
             dropout (float, optional): Dropout used after each linear layer. Defaults to 0.3.
         """
@@ -90,7 +90,7 @@ class UVNetClassifier(nn.Module):
     ):
         """
         Initialize the UV-Net solid classification model
-        
+
         Args:
             num_classes (int): Number of classes to output
             crv_emb_dim (int, optional): Embedding dimension for the 1D edge UV-grids. Defaults to 64.
@@ -490,25 +490,25 @@ class Contrastive(pl.LightningModule):
     """
 
     def __init__(
-            self, 
-            latent_dim=128, 
+            self,
+            latent_dim=128,
             crv_emb_dim=64,
             srf_emb_dim=64,
             graph_emb_dim=128,
-            out_dim=128, 
-            temperature=0.1, 
-            batch_size=256, 
+            out_dim=128,
+            temperature=0.1,
+            batch_size=256,
             channels="points,trimming_mask"
-        ):
+    ):
         super().__init__()
         self.save_hyperparameters()
         self.loss_fn = NTXentLoss(temperature=temperature, batch_size=batch_size)
         self.model = UVNetContrastiveLearner(
-            latent_dim=latent_dim, 
+            latent_dim=latent_dim,
             crv_emb_dim=crv_emb_dim,
             srf_emb_dim=srf_emb_dim,
             graph_emb_dim=graph_emb_dim,
-            out_dim=out_dim, 
+            out_dim=out_dim,
             channels=channels.split(',')
         )
 
@@ -517,7 +517,7 @@ class Contrastive(pl.LightningModule):
         graph.edata["x"] = graph.edata["x"].permute(0, 2, 1)
         return graph
 
-    def step(self, batch, batch_idx): 
+    def step(self, batch, batch_idx):
         device = next(self.model.buffers()).device
         graph1, graph2 = batch["graph"].to(device), batch["graph2"].to(device)
         graph1 = self._permute_graph_data_channels(graph1)
@@ -608,35 +608,35 @@ class JointPrediction(pl.LightningModule):
     def __init__(
             self,
             input_features=["type","area","length","points","normals","tangents","trimming_mask"],
-            emb_dim=384,
+            emb_dim=512,
             n_head=8,
             n_layer_gat=2,
             n_layer_sat=2,
             n_layer_cat=2,
             bias=False,
             dropout=0.0,
-            lr=1e-3,
+            lr=1e-4,
             loss_fn="mle",
             # pretrained_model=None
         ):
         super().__init__()
         # if pretrained_model is None:
         #     self.pre_trained_model = Contrastive(
-        #         latent_dim=latent_dim, 
+        #         latent_dim=latent_dim,
         #         crv_emb_dim=node_emb_dim,
         #         srf_emb_dim=node_emb_dim,
         #         graph_emb_dim=2*node_emb_dim,
-        #         out_dim=out_dim, 
+        #         out_dim=out_dim,
         #         channels=channels
         #     ).model
         # else:
         #     self.pre_trained_model = Contrastive.load_from_checkpoint(
-        #         latent_dim=latent_dim, 
+        #         latent_dim=latent_dim,
         #         crv_emb_dim=node_emb_dim,
         #         srf_emb_dim=node_emb_dim,
         #         graph_emb_dim=2*node_emb_dim,
-        #         out_dim=out_dim, 
-        #         channels=channels, 
+        #         out_dim=out_dim,
+        #         channels=channels,
         #         checkpoint_path=pretrained_model
         #     ).model
         # self.projection_layer = nn.Sequential(
@@ -651,13 +651,13 @@ class JointPrediction(pl.LightningModule):
         #     nn.Sigmoid()
         # )
         self.model = JoinABLe(
-            input_features, 
-            emb_dim, 
-            n_head, 
-            n_layer_gat, 
-            n_layer_sat, 
-            n_layer_cat, 
-            bias, 
+            input_features,
+            emb_dim,
+            n_head,
+            n_layer_gat,
+            n_layer_sat,
+            n_layer_cat,
+            bias,
             dropout
         )
         self.lr = lr
@@ -666,10 +666,38 @@ class JointPrediction(pl.LightningModule):
         self.loss_fn = loss_fn
 
     def step(self, batch):
-        g1, g2, jg, _ = batch        
+        g1, g2, jg, _ = batch
         device = next(self.model.parameters()).device
         g1, g2, jg = g1.to(device), g2.to(device), jg.to(device)
-        pair_logits, type_logits = self.model(g1, g2, jg)
+        # g1 = self._permute_graph_data_channels(g1)
+        # g2 = self._permute_graph_data_channels(g2)
+        # _, global_emb1, _ = self.pre_trained_model(g1)
+        # _, global_emb2, _ = self.pre_trained_model(g2)
+        # x = self.projection_layer(global_emb1 + global_emb2).squeeze(-1)
+        nodes_num = 0
+        edge_index_1 = 0
+        edge_index_2 = 0
+        bg1_node = {
+            "uv": g1.ndata["uv"],
+            "type": g1.ndata["type"],
+            "area": g1.ndata["area"],
+        }
+        bg1_edge = {
+            "uv": g1.edata["uv"],
+            "type": g1.edata["type"],
+            "length": g1.edata["length"],
+        }
+        bg2_node = {
+            "uv": g2.ndata["uv"],
+            "type": g2.ndata["type"],
+            "area": g2.ndata["area"],
+        }
+        bg2_edge = {
+            "uv": g2.edata["uv"],
+            "type": g2.edata["type"],
+            "length": g2.edata["length"],
+        }
+        pair_logits, type_logits = self.model(nodes_num, edge_index_1, edge_index_2, bg1_node, bg1_edge, bg2_node, bg2_edge, jg)
         num_nodes1, num_nodes2 = g1.batch_num_nodes(), g2.batch_num_nodes()
         loss = self.compute_loss(pair_logits, type_logits, jg, num_nodes1, num_nodes2)
         return loss, pair_logits, type_logits
@@ -694,7 +722,7 @@ class JointPrediction(pl.LightningModule):
             size_i = n_nodes1 * n_nodes2
             end = start + size_i
             top_k_i = self.precision_at_top_k(
-                pair_logits[start: end], 
+                pair_logits[start: end],
                 item.edata["label_matrix"], 
                 n_nodes1, 
                 n_nodes2, 
@@ -783,13 +811,13 @@ class JointPrediction(pl.LightningModule):
                 "monitor": "val_loss",
             },
         }
-    
+
     def bce_loss(self, x, ys_matrix, pos_weight=1.0):
         x = x.unsqueeze(1)
         ys_matrix = ys_matrix.flatten().float().unsqueeze(1)
         loss_fn = nn.BCEWithLogitsLoss(reduction="mean", pos_weight=torch.tensor([pos_weight]).to(x.device))
         return loss_fn(x, ys_matrix)
-    
+
     def soft_cross_entropy(self, x, labels):
         logprobs = F.log_softmax(x, dim=-1)
         # loss = -(labels * logprobs).sum()
@@ -812,7 +840,7 @@ class JointPrediction(pl.LightningModule):
         loss2 = F.cross_entropy(x_2d[:, ys_2d[:, 1]].transpose(0, 1), ys_2d[:, 0], reduction="mean")
         loss = 0.5 * (loss1 + loss2)
         return loss
-    
+
     def compute_loss(self, pair_logits, type_logits, joint_graph, num_nodes1, num_nodes2):
         joint_graph_unbatched = dgl.unbatch(joint_graph)
         batch_size = len(joint_graph_unbatched)
@@ -822,7 +850,7 @@ class JointPrediction(pl.LightningModule):
         loss_clf = 0
         loss_sym = 0
         loss_type = 0
-        start = 0        
+        start = 0
 
         for i in range(batch_size):
             size_i = size_of_each_joint_graph[i]
@@ -847,14 +875,14 @@ class JointPrediction(pl.LightningModule):
         loss = loss_clf + loss_sym + loss_type
         loss = loss / float(batch_size)
         return loss
-    
+
     def precision_at_top_k(self, logits, labels, n1, n2, k=None):
         logits = logits.view(n1, n2)
         labels = labels.view(n1, n2)
         if k is None:
             k = metrics.get_k_sequence()
         return metrics.hit_at_top_k(logits, labels, k=k)
-    
+
     def _permute_graph_data_channels(self, graph):
         graph.ndata["x"] = graph.ndata["x"].permute(0, 3, 1, 2)
         if graph.edata["x"].numel() != 0:

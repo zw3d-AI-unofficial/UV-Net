@@ -6,6 +6,9 @@ __pycache__/
 # C extensions
 *.so
 
+# onnx model
+*.onnx
+
 # Distribution / packaging
 .Python
 build/
