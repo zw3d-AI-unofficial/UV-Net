@@ -209,6 +209,18 @@ class JointGraphDataset(JointBaseDataset):
             self.graphs[i][1].ndata["uv"] = self.graphs[i][1].ndata["uv"].type(torch.FloatTensor)
             self.graphs[i][1].edata["uv"] = self.graphs[i][1].edata["uv"].type(torch.FloatTensor)
 
+            for feat in self.SURFACE_GEOM_FEAT_MAP:
+                if feat == "type":
+                    continue
+                self.graphs[i][0].ndata[feat] = self.graphs[i][0].ndata[feat].type(torch.FloatTensor)
+                self.graphs[i][1].ndata[feat] = self.graphs[i][1].ndata[feat].type(torch.FloatTensor)
+            
+            for feat in self.CURVE_GEOM_FEAT_MAP:
+                if feat == "type":
+                    continue
+                self.graphs[i][0].edata[feat] = self.graphs[i][0].edata[feat].type(torch.FloatTensor)
+                self.graphs[i][1].edata[feat] = self.graphs[i][1].edata[feat].type(torch.FloatTensor)
+
     def __getitem__(self, idx):
         graph1_name, graph2_name = self.graph_files[idx]
         joint_graph_name = self.files[idx]
@@ -341,10 +353,15 @@ class JointGraphDataset(JointBaseDataset):
         # Check we aren't too far out of bounds due to the masked surface
         if torch.max(g1.ndata["uv"][:, :, :, :3]) > 2.0 or torch.max(g1.ndata["uv"][:, :, :, :3]) < -2.0:
             return False
+        g1.edata["uv"][:, :, :3] -= center1
+        g1.edata["uv"][:, :, :3] *= scale
+
         g2.ndata["uv"][:, :, :, :3] -= center2
         g2.ndata["uv"][:, :, :, :3] *= scale
         if torch.max(g2.ndata["uv"][:, :, :, :3]) > 2.0 or torch.max(g2.ndata["uv"][:, :, :, :3]) < -2.0:
             return False
+        g2.edata["uv"][:, :, :3] -= center2
+        g2.edata["uv"][:, :, :3] *= scale
         
         g1.ndata["parameter"] = g1.ndata["parameter"].double()
         g1.ndata["parameter"][:, 0] *= scale
@@ -403,6 +420,8 @@ class JointGraphDataset(JointBaseDataset):
         joint_file = joint_folder / joint_file_name
         with open(joint_file, encoding="utf8") as f:
             joint_data = json.load(f)
+        if "body_one" not in joint_data or "body_two" not in joint_data:
+            return None
         g1, face_count1, edge_count1 = self.load_part(
             joint_data["body_one"])
         if g1 is None or edge_count1 == 0:
@@ -437,8 +456,10 @@ class JointGraphDataset(JointBaseDataset):
 
     def load_part(self, body):
         """Load a graph created from a brep body"""
-        part_folder = self.root_dir / "graph"
-        sample = self.load_one_graph(part_folder / (body  + ".bin"))
+        part_file = self.root_dir / "graph" / (body  + ".bin")
+        if not part_file.exists():
+            return None, None, None
+        sample = self.load_one_graph(part_file)
         graph = sample["graph"]
         return graph, graph.number_of_nodes(), graph.number_of_edges()
 

@@ -669,36 +669,25 @@ class JointPrediction(pl.LightningModule):
         g1, g2, jg, _ = batch
         device = next(self.model.parameters()).device
         g1, g2, jg = g1.to(device), g2.to(device), jg.to(device)
-        # g1 = self._permute_graph_data_channels(g1)
-        # g2 = self._permute_graph_data_channels(g2)
-        # _, global_emb1, _ = self.pre_trained_model(g1)
-        # _, global_emb2, _ = self.pre_trained_model(g2)
-        # x = self.projection_layer(global_emb1 + global_emb2).squeeze(-1)
-        nodes_num = 0
-        edge_index_1 = 0
-        edge_index_2 = 0
-        bg1_node = {
-            "uv": g1.ndata["uv"],
-            "type": g1.ndata["type"],
-            "area": g1.ndata["area"],
-        }
-        bg1_edge = {
-            "uv": g1.edata["uv"],
-            "type": g1.edata["type"],
-            "length": g1.edata["length"],
-        }
-        bg2_node = {
-            "uv": g2.ndata["uv"],
-            "type": g2.ndata["type"],
-            "area": g2.ndata["area"],
-        }
-        bg2_edge = {
-            "uv": g2.edata["uv"],
-            "type": g2.edata["type"],
-            "length": g2.edata["length"],
-        }
-        pair_logits, type_logits = self.model(nodes_num, edge_index_1, edge_index_2, bg1_node, bg1_edge, bg2_node, bg2_edge, jg)
         num_nodes1, num_nodes2 = g1.batch_num_nodes(), g2.batch_num_nodes()
+        pair_logits, type_logits = self.model(
+            torch.stack((num_nodes1, num_nodes2)), 
+            torch.stack(g1.edges()), 
+            torch.stack(g2.edges()), 
+            g1.ndata["uv"], 
+            g1.ndata["type"], 
+            g1.ndata["area"], 
+            g1.edata["uv"], 
+            g1.edata["type"], 
+            g1.edata["length"], 
+            g2.ndata["uv"], 
+            g2.ndata["type"], 
+            g2.ndata["area"], 
+            g2.edata["uv"], 
+            g2.edata["type"], 
+            g2.edata["length"], 
+            jg.edges()
+        )
         loss = self.compute_loss(pair_logits, type_logits, jg, num_nodes1, num_nodes2)
         return loss, pair_logits, type_logits
 

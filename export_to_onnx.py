@@ -1,99 +1,86 @@
 import torch
 from pathlib import Path
 from args import args_train
-# from train import JointPrediction
-from datasets.joint_graph_dataset import JointGraphDataset
+from uvnet.models import JointPrediction
 from uvnet.joinable import JoinABLe
 import onnx
 
-def export_to_onnx(args, model):
-    num_nodes1, num_edges1, num_nodes2, num_edges2 = 5, 6, 10, 12
-    dummy_g1_node = torch.randn(num_nodes1, JointGraphDataset.grid_size, JointGraphDataset.grid_size, JointGraphDataset.grid_channels)
-    dummy_g1_edge = torch.randn(num_edges1, JointGraphDataset.grid_size, JointGraphDataset.grid_channels - 1)
-    # dummy_g1_ent = torch.randn(num_nodes1, JointGraphDataset.ent_feature_size)
-    # dummy_g1_ent[:, 1] = torch.randint(0, len(JointGraphDataset.curve_type_map), [num_nodes1])
-    dummy_g1_edge_index = torch.randint(0, num_nodes1, (2, num_edges1))
-    dummy_g2_node = torch.randn(num_nodes2, JointGraphDataset.grid_size, JointGraphDataset.grid_size, JointGraphDataset.grid_channels)
-    dummy_g2_edge = torch.randn(num_edges2, JointGraphDataset.grid_size, JointGraphDataset.grid_channels - 1)
-    # dummy_g2_ent = torch.randn(num_nodes2, JointGraphDataset.ent_feature_size)
-    # dummy_g2_ent[:, 1] = torch.randint(0, len(JointGraphDataset.curve_type_map), [num_nodes2])
-    dummy_g2_edge_index = torch.randint(0, num_nodes2, (2, num_edges2))
-
-    dummy_num_nodes = torch.tensor([[num_nodes1], [num_nodes2]])
-    dummy_g1_node_type = torch.randint(0, 6, [num_nodes1])
-    dummy_g1_node_area = torch.randn(num_nodes1, 1)
-    dummy_g1_edge_type = torch.randint(0, 4, [num_edges1])
-    dummy_g1_edge_length = torch.randn(num_edges1, 1)
-    dummy_g2_node_type = torch.randint(0, 6, [num_nodes2])
-    dummy_g2_node_area = torch.randn(num_nodes2, 1)
-    dummy_g2_edge_type = torch.randint(0, 4, [num_edges2])
-    dummy_g2_edge_length = torch.randn(num_edges2, 1)
+def export_to_onnx(model):
+    num_nodes1, num_edges1, num_nodes2, num_edges2, grid_size, grid_channel = 5, 6, 10, 12, 10, 7
+    num_nodes = torch.tensor([[num_nodes1], [num_nodes2]])
+    g1_edge_index = torch.randint(0, num_nodes1, (2, num_edges1))
+    g2_edge_index = torch.randint(0, num_nodes2, (2, num_edges2))
+    g1_node_uv = torch.randn(num_nodes1, grid_size, grid_size, grid_channel)
+    g1_node_type = torch.randint(0, 6, [num_nodes1])
+    g1_node_area = torch.randn(num_nodes1, 1)
+    g1_edge_uv = torch.randn(num_edges1, grid_size, grid_channel - 1)
+    g1_edge_type = torch.randint(0, 4, [num_edges1])
+    g1_edge_length = torch.randn(num_edges1, 1)
+    g2_node_uv = torch.randn(num_nodes2, grid_size, grid_size, grid_channel)
+    g2_node_type = torch.randint(0, 6, [num_nodes2])
+    g2_node_area = torch.randn(num_nodes2, 1)
+    g2_edge_uv = torch.randn(num_edges2, grid_size, grid_channel - 1)
+    g2_edge_type = torch.randint(0, 4, [num_edges2])
+    g2_edge_length = torch.randn(num_edges2, 1)
+    jg_edge_index = torch.randint(0, max(num_nodes1, num_nodes2), (2, num_nodes1 * num_nodes2))
     input = (
-        dummy_num_nodes,
-        dummy_g1_edge_index,
-        dummy_g2_edge_index,
-        # node_data_1
-        dummy_g1_node,
-        dummy_g1_node_type,
-        dummy_g1_node_area,
-        # edge_data_1
-        dummy_g1_edge,
-        dummy_g1_edge_type,
-        dummy_g1_edge_length,
-        # node_data_2
-        dummy_g2_node,
-        dummy_g2_node_type,
-        dummy_g2_node_area,
-        # edge_data_2
-        dummy_g2_edge,
-        dummy_g2_edge_type,
-        dummy_g2_edge_length,
+        num_nodes,
+        g1_edge_index,
+        g2_edge_index,
+        g1_node_uv,
+        g1_node_type,
+        g1_node_area,
+        g1_edge_uv,
+        g1_edge_type,
+        g1_edge_length,
+        g2_node_uv,
+        g2_node_type,
+        g2_node_area,
+        g2_edge_uv,
+        g2_edge_type,
+        g2_edge_length,
+        jg_edge_index
     )
 
     input_names = [
-        "dummy_num_nodes",
-        "dummy_g1_edge_index",
-        "dummy_g2_edge_index",
-        # node_data_1
-        "dummy_g1_node",
-        "dummy_g1_node_type",
-        "dummy_g1_node_area",
-        # edge_data_1
-        "dummy_g1_edge",
-        "dummy_g1_edge_type",
-        "dummy_g1_edge_length",
-        # node_data_2
-        "dummy_g2_node",
-        "dummy_g2_node_type",
-        "dummy_g2_node_area",
-        # edge_data_2
-        "dummy_g2_edge",
-        "dummy_g2_edge_type",
-        "dummy_g2_edge_length",
+        "num_nodes",
+        "g1_edge_index",
+        "g2_edge_index",
+        "g1_node",
+        "g1_node_type",
+        "g1_node_area",
+        "g1_edge",
+        "g1_edge_type",
+        "g1_edge_length",
+        "g2_node",
+        "g2_node_type",
+        "g2_node_area",
+        "g2_edge",
+        "g2_edge_type",
+        "g2_edge_length",
+        'jg_edge_index'
     ]
 
     dynamic_axes = {
-        'dummy_g1_edge_index': {1: 'num_edges1'},
-        'dummy_g2_edge_index': {1: 'num_edges2'},
-        'dummy_g1_node': {0: 'num_nodes1'},
-        'dummy_g2_node': {0: 'num_nodes2'},
-        'dummy_g1_edge': {0: 'num_edges1'},
-        'dummy_g2_edge': {0: 'num_edges2'},
-        "dummy_g1_node_type": {0: 'num_nodes1'},
-        "dummy_g1_node_area": {0: 'num_nodes1'},
-        "dummy_g1_edge_type": {0: 'num_edges1'},
-        "dummy_g1_edge_length": {0: 'num_edges1'},
-        "dummy_g2_node_type": {0: 'num_nodes2'},
-        "dummy_g2_node_area": {0: 'num_nodes2'},
-        "dummy_g2_edge_type": {0: 'num_edges2'},
-        "dummy_g2_edge_length": {0: 'num_edges2'},
+        'g1_edge_index': {1: 'num_edges1'},
+        'g2_edge_index': {1: 'num_edges2'},
+        'g1_node': {0: 'num_nodes1'},
+        'g2_node': {0: 'num_nodes2'},
+        'g1_edge': {0: 'num_edges1'},
+        'g2_edge': {0: 'num_edges2'},
+        "g1_node_type": {0: 'num_nodes1'},
+        "g1_node_area": {0: 'num_nodes1'},
+        "g1_edge_type": {0: 'num_edges1'},
+        "g1_edge_length": {0: 'num_edges1'},
+        "g2_node_type": {0: 'num_nodes2'},
+        "g2_node_area": {0: 'num_nodes2'},
+        "g2_edge_type": {0: 'num_edges2'},
+        "g2_edge_length": {0: 'num_edges2'},
+        'jg_edge_index': {1: 'num_nodes1 * num_nodes2'},
+        'output': {0: 'num_nodes1 * num_nodes2'}
     }
 
-    # exp_dir = Path(args.exp_dir)
-    # exp_name_dir = exp_dir / args.exp_name
-    file = "/home/xuhaizi/UV-Net/test_19_no_bias_small.onnx"
-    model.eval()
-    # model.double()
+    file = "/home/fusiqiao/Projects/UV-Net/basic.onnx"
     torch.onnx.export(
         model,
         input,
@@ -112,21 +99,9 @@ def export_to_onnx(args, model):
 
 if __name__ == "__main__":
     args = args_train.get_args()
-    
-    exp_dir = Path(args.exp_dir)
-    exp_name_dir = exp_dir / args.exp_name
-    # checkpoint_file = exp_name_dir / f"{args.checkpoint}.ckpt"
-    # model = JointPrediction.load_from_checkpoint(checkpoint_file).model
-    model = JoinABLe(
-        input_features=["type","area","length","points","normals","tangents","trimming_mask"],
-        emb_dim=64,
-        n_head=2,
-        n_layer_gat=1,
-        n_layer_sat=0,
-        n_layer_cat=0,
-        bias=False,
-        dropout=0.0
-    )
+    checkpoint_file = Path(args.checkpoint)
+    model = JointPrediction.load_from_checkpoint(emb_dim=384, checkpoint_path=checkpoint_file).model
+    # model = JoinABLe()
     model.eval()
     model.cpu()
-    export_to_onnx(args, model)
+    export_to_onnx(model)

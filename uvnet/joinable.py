@@ -1,12 +1,10 @@
-import dgl
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import uvnet.encoders
 from datasets.fusion_joint import JointGraphDataset
-# from uvnet.gatv2conv_custom import GATv2Conv
 from torch_geometric.nn import GATv2Conv
-from torch_geometric.data import Data, Batch
+from torch_geometric.data import Data
 
 def cnn2d(inp_channels, hidden_channels, out_dim, num_layers=1):
     assert num_layers >= 1
@@ -287,7 +285,7 @@ class GraphEncoder(nn.Module):
             x = self.split_and_pad(face_emb, node_count)
         else:
             x = face_emb.unsqueeze(0)
-        #
+
         # Attention layers
         attn_mask = self.get_attn_mask(x, node_count)
         for block in self.sat_list:
@@ -390,8 +388,8 @@ class JointPairHead(nn.Module):
             self.projection_layer.append(nn.ReLU())
         self.output_layer = nn.Linear(input_dim, 1, bias)
 
-    def forward(self, x, jg):
-        src_nodes, dst_nodes = jg.edges()
+    def forward(self, x, jg_edge_index):
+        src_nodes, dst_nodes = jg_edge_index
         x = x[src_nodes, :] + x[dst_nodes, :]
         x = self.ln(x)
         for layer in self.projection_layer:
@@ -428,7 +426,7 @@ class JoinABLe(nn.Module):
     def __init__(
             self,
             input_features=["type", "area", "length", "points", "normals", "tangents", "trimming_mask"],
-            emb_dim=384,
+            emb_dim=512,
             n_head=8,
             n_layer_gat=2,
             n_layer_sat=2,
@@ -462,18 +460,18 @@ class JoinABLe(nn.Module):
                 bg1_node_uv, bg1_node_type, bg1_node_area,
                 bg1_edge_uv, bg1_edge_type, bg1_edge_length,
                 bg2_node_uv, bg2_node_type, bg2_node_area,
-                bg2_edge_uv, bg2_edge_type, bg2_edge_length, jg):
+                bg2_edge_uv, bg2_edge_type, bg2_edge_length, jg_edge_index):
 
         g1 = Data(bg1_node_uv, edge_index_1)
         g2 = Data(bg2_node_uv, edge_index_2)
 
-        g1 = self.init_graph(g1, bg1_node_uv, bg1_node_type, bg1_node_area,
+        g1 = self.init_graph(g1, bg1_node_type, bg1_node_area,
                             bg1_edge_uv, bg1_edge_type, bg1_edge_length)
-        g2 = self.init_graph(g2, bg2_node_uv, bg2_node_type, bg2_node_area,
+        g2 = self.init_graph(g2, bg2_node_type, bg2_node_area,
                             bg2_edge_uv, bg2_edge_type, bg2_edge_length)
 
-        node_counts1 = nodes_num[0]
-        node_counts2 = nodes_num[1]
+        node_counts1 = nodes_num[0].tolist()
+        node_counts2 = nodes_num[1].tolist()
         x1 = self.graph_encoder(g1, node_counts1)
         x2 = self.graph_encoder(g2, node_counts2)
 
@@ -486,10 +484,10 @@ class JoinABLe(nn.Module):
         else:
             x = torch.cat((x1[0], x2[0]), dim=0)
 
-        pair_logits = self.pair_head(x, jg)
+        pair_logits = self.pair_head(x, jg_edge_index)
         type_logits = None
-        if self.with_type:
-            type_logits = self.type_head(x, jg)
+        # if self.with_type:
+        #     type_logits = self.type_head(x, jg)
         return pair_logits, type_logits
 
     def get_attn_mask(self, x1, x2, n_nodes1, n_nodes2):
@@ -516,8 +514,7 @@ class JoinABLe(nn.Module):
         x = torch.cat(concat_x, dim=0)
         return x
 
-    def init_graph(self, bg, node_uv, node_type, node_area, edge_uv, edge_type, edge_length):
-        # bg.node_uv = node_uv
+    def init_graph(self, bg, node_type, node_area, edge_uv, edge_type, edge_length):
         bg.node_type = node_type
         bg.node_area = node_area
 

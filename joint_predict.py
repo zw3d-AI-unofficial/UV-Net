@@ -80,7 +80,7 @@ parser.add_argument(
     default="type,area,length,points,normals,tangents,trimming_mask",
     help="Input features to use as a string separated by commas.\
             Can include: points, normals, tangents, trimming_mask,\
-            axis_pos, axis_dir, bounding_box, type\
+            axis_pos, axis_dir, bounding_box, type, parameter\
             area, circumference\
             length, start_point, middle_point, end_point"
 )
