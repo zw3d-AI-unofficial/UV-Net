@@ -35,7 +35,7 @@ parser.add_argument(
 parser.add_argument(
     "--num_workers",
     type=int,
-    default=32,
+    default=8,
     help="Number of workers for the dataloader. NOTE: set this to 0 on Windows, any other value leads to poor performance",
 )
 parser.add_argument(

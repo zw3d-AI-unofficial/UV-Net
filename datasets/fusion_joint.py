@@ -120,20 +120,20 @@ class JointGraphDataset(JointBaseDataset):
     }
 
     SURFACE_GEOM_FEAT_MAP = {
-        "type": 6,
-        "parameter": 2,
-        "axis": 6,
-        "box": 6,
-        "area": 1,
-        "circumference": 1
+        "type": (0,6),
+        "parameter": (1,2),
+        "axis": (3,6),
+        "box": (9,6),
+        "area": (15,1),
+        "circumference": (16,1)
     }
 
     CURVE_GEOM_FEAT_MAP = {
-        "type": 4,
-        "parameter": 2,
-        "axis": 6,
-        "box": 6,
-        "length": 1
+        "type": (0,4),
+        "parameter": (1,2),
+        "axis": (3,6),
+        "box": (9,6),
+        "length": (15,1)
     }
 
     JOINT_TYPE_MAP = {

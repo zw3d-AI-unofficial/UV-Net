@@ -21,6 +21,7 @@ import uvnet.encoders
 import metrics
 import dgl
 from uvnet.joinable import JoinABLe
+from datasets.fusion_joint import JointGraphDataset
 
 
 class _NonLinearClassifier(nn.Module):
@@ -669,23 +670,40 @@ class JointPrediction(pl.LightningModule):
         g1, g2, jg, _ = batch
         device = next(self.model.parameters()).device
         g1, g2, jg = g1.to(device), g2.to(device), jg.to(device)
+
+        node_geom_1, node_geom_2 = [], []
+        for feat in JointGraphDataset.SURFACE_GEOM_FEAT_MAP:
+            _, size = JointGraphDataset.SURFACE_GEOM_FEAT_MAP[feat]
+            if feat == "type" or size == 1:
+                node_geom_1.append(g1.ndata[feat].unsqueeze(1))
+                node_geom_2.append(g2.ndata[feat].unsqueeze(1))
+            else:
+                node_geom_1.append(g1.ndata[feat])
+                node_geom_2.append(g2.ndata[feat])
+
+        edge_geom_1, edge_geom_2 = [], []
+        for feat in JointGraphDataset.CURVE_GEOM_FEAT_MAP:
+            _, size = JointGraphDataset.CURVE_GEOM_FEAT_MAP[feat]
+            if feat == "type" or size == 1:
+                edge_geom_1.append(g1.edata[feat].unsqueeze(1))
+                edge_geom_2.append(g2.edata[feat].unsqueeze(1))
+            else:
+                edge_geom_1.append(g1.edata[feat])
+                edge_geom_2.append(g2.edata[feat])
+
         num_nodes1, num_nodes2 = g1.batch_num_nodes(), g2.batch_num_nodes()
         pair_logits, type_logits = self.model(
-            torch.stack((num_nodes1, num_nodes2)), 
-            torch.stack(g1.edges()), 
-            torch.stack(g2.edges()), 
             g1.ndata["uv"], 
-            g1.ndata["type"], 
-            g1.ndata["area"], 
+            torch.cat(node_geom_1, axis=1),
             g1.edata["uv"], 
-            g1.edata["type"], 
-            g1.edata["length"], 
+            torch.cat(edge_geom_1, axis=1),
+            torch.stack(g1.edges()), 
             g2.ndata["uv"], 
-            g2.ndata["type"], 
-            g2.ndata["area"], 
+            torch.cat(node_geom_2, axis=1),
             g2.edata["uv"], 
-            g2.edata["type"], 
-            g2.edata["length"], 
+            torch.cat(edge_geom_2, axis=1),
+            torch.stack(g2.edges()), 
+            torch.stack((num_nodes1, num_nodes2)), 
             jg.edges()
         )
         loss = self.compute_loss(pair_logits, type_logits, jg, num_nodes1, num_nodes2)
@@ -801,7 +819,7 @@ class JointPrediction(pl.LightningModule):
             },
         }
 
-    def bce_loss(self, x, ys_matrix, pos_weight=1.0):
+    def bce_loss(self, x, ys_matrix, pos_weight=100.0):
         x = x.unsqueeze(1)
         ys_matrix = ys_matrix.flatten().float().unsqueeze(1)
         loss_fn = nn.BCEWithLogitsLoss(reduction="mean", pos_weight=torch.tensor([pos_weight]).to(x.device))

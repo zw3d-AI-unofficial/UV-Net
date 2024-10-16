@@ -1,10 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import uvnet.encoders
 from datasets.fusion_joint import JointGraphDataset
 from torch_geometric.nn import GATv2Conv
-from torch_geometric.data import Data
 
 def cnn2d(inp_channels, hidden_channels, out_dim, num_layers=1):
     assert num_layers >= 1
@@ -81,7 +79,8 @@ class FaceEncoder(nn.Module):
             self.grid_features.append(6)
         self.geom_features = []
         self.geom_feature_size = 0
-        for feat, feat_size in JointGraphDataset.SURFACE_GEOM_FEAT_MAP.items():
+        for feat, value in JointGraphDataset.SURFACE_GEOM_FEAT_MAP.items():
+            _, feat_size = value
             if feat in input_features:
                 self.geom_features.append(feat)
                 self.geom_feature_size += feat_size
@@ -103,19 +102,20 @@ class FaceEncoder(nn.Module):
             if m.bias is not None:
                 m.bias.data.fill_(0.0)
 
-    def forward(self, bg):
+    def forward(self, node_uv, node_geom):
         x = None
         if len(self.grid_features) > 0:
-            grid_feat = bg.x[:, :, :, self.grid_features].permute(0, 3, 1, 2)
+            grid_feat = node_uv[:, :, :, self.grid_features].permute(0, 3, 1, 2)
             x = self.grid_embd(grid_feat)
             # x = torch.randn(grid_feat.shape[0], 64)
         if self.geom_feature_size > 0:
             geom_feat = []
             for feat in self.geom_features:
+                start, size = JointGraphDataset.SURFACE_GEOM_FEAT_MAP[feat]
                 if feat == "type":
-                    feat = F.one_hot(bg["node_" + feat], num_classes=JointGraphDataset.SURFACE_GEOM_FEAT_MAP["type"])
+                    feat = F.one_hot(node_geom[:, start].long(), num_classes=size)
                 else:
-                    feat = bg["node_" + feat]
+                    feat = node_geom[:, start:(start+size)]
                     if len(feat.shape) == 1:
                         feat = feat.unsqueeze(1)
                 geom_feat.append(feat)
@@ -145,7 +145,8 @@ class EdgeEncoder(nn.Module):
             self.grid_features.extend([3, 4, 5])
         self.geom_features = []
         self.geom_feature_size = 0
-        for feat, feat_size in JointGraphDataset.CURVE_GEOM_FEAT_MAP.items():
+        for feat, value in JointGraphDataset.CURVE_GEOM_FEAT_MAP.items():
+            _, feat_size = value
             if feat in input_features:
                 self.geom_features.append(feat)
                 self.geom_feature_size += feat_size
@@ -167,18 +168,19 @@ class EdgeEncoder(nn.Module):
             if m.bias is not None:
                 m.bias.data.fill_(0.0)
 
-    def forward(self, bg):
+    def forward(self, edge_uv, edge_geom):
         x = None
         if len(self.grid_features) > 0:
-            grid_feat = bg['edge_uv'][:, :, self.grid_features].permute(0, 2, 1)
+            grid_feat = edge_uv[:, :, self.grid_features].permute(0, 2, 1)
             x = self.grid_embd(grid_feat)
         if self.geom_feature_size > 0:
             geom_feat = []
             for feat in self.geom_features:
+                start, size = JointGraphDataset.CURVE_GEOM_FEAT_MAP[feat]
                 if feat == "type":
-                    feat = F.one_hot(bg["edge_" + feat], num_classes=JointGraphDataset.CURVE_GEOM_FEAT_MAP["type"])
+                    feat = F.one_hot(edge_geom[:, start].long(), num_classes=size)
                 else:
-                    feat = bg["edge_" + feat]
+                    feat = edge_geom[:, start:(start+size)]
                     if len(feat.shape) == 1:
                         feat = feat.unsqueeze(1)
                 geom_feat.append(feat)
@@ -249,8 +251,8 @@ class GATBlock(nn.Module):
         self.mlp = MLP(emb_dim, emb_dim, bias, dropout)
         self.emb_dim = emb_dim
 
-    def forward(self, graph, x, edge_attr):
-        x = x + self.attn(self.ln_1(x), graph.edge_index, edge_attr)
+    def forward(self, edge_index, x, edge_attr):
+        x = x + self.attn(self.ln_1(x), edge_index, edge_attr)
         x = x + self.mlp(self.ln_2(x))
         return x
 
@@ -274,12 +276,20 @@ class GraphEncoder(nn.Module):
         self.sat_list = nn.ModuleList([SATBlock(emb_dim, n_head, bias, dropout) for _ in range(n_layer_sat)])
         self.drop = nn.Dropout(dropout)
 
-    def forward(self, bg, node_count):
-        face_emb = self.drop(self.face_encoder(bg))
-        edge_emb = self.drop(self.edge_encoder(bg))
+    def forward(
+            self, 
+            node_uv, 
+            node_geom,
+            edge_uv,
+            edge_geom,
+            edge_index, 
+            node_count
+        ):
+        face_emb = self.drop(self.face_encoder(node_uv, node_geom))
+        edge_emb = self.drop(self.edge_encoder(edge_uv, edge_geom))
         # return face_emb
         for block in self.gat_list:
-            face_emb = block(bg, face_emb, edge_emb)
+            face_emb = block(edge_index, face_emb, edge_emb)
         # Prepare data for attention layers
         if self.training:
             x = self.split_and_pad(face_emb, node_count)
@@ -456,24 +466,26 @@ class JoinABLe(nn.Module):
         elif isinstance(module, nn.Conv1d) or isinstance(module, nn.Conv2d):
             torch.nn.init.kaiming_uniform_(module.weight, nonlinearity='relu')
 
-    def forward(self, nodes_num, edge_index_1, edge_index_2,
-                bg1_node_uv, bg1_node_type, bg1_node_area,
-                bg1_edge_uv, bg1_edge_type, bg1_edge_length,
-                bg2_node_uv, bg2_node_type, bg2_node_area,
-                bg2_edge_uv, bg2_edge_type, bg2_edge_length, jg_edge_index):
+    def forward(
+            self, 
+            node_uv_1, 
+            node_geom_1, 
+            edge_uv_1, 
+            edge_geom_1, 
+            edge_index_1, 
+            node_uv_2, 
+            node_geom_2, 
+            edge_uv_2, 
+            edge_geom_2, 
+            edge_index_2, 
+            node_counts, 
+            jg_edge_index
+        ):
 
-        g1 = Data(bg1_node_uv, edge_index_1)
-        g2 = Data(bg2_node_uv, edge_index_2)
-
-        g1 = self.init_graph(g1, bg1_node_type, bg1_node_area,
-                            bg1_edge_uv, bg1_edge_type, bg1_edge_length)
-        g2 = self.init_graph(g2, bg2_node_type, bg2_node_area,
-                            bg2_edge_uv, bg2_edge_type, bg2_edge_length)
-
-        node_counts1 = nodes_num[0].tolist()
-        node_counts2 = nodes_num[1].tolist()
-        x1 = self.graph_encoder(g1, node_counts1)
-        x2 = self.graph_encoder(g2, node_counts2)
+        node_counts1 = node_counts[0].tolist()
+        node_counts2 = node_counts[1].tolist()
+        x1 = self.graph_encoder(node_uv_1, node_geom_1, edge_uv_1, edge_geom_1, edge_index_1, node_counts1)
+        x2 = self.graph_encoder(node_uv_2, node_geom_2, edge_uv_2, edge_geom_2, edge_index_2, node_counts2)
 
         attn_mask = self.get_attn_mask(x1, x2, node_counts1, node_counts2)
         for block in self.cat_list:
